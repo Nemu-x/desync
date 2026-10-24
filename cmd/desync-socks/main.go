@@ -27,10 +27,16 @@ func main() {
 	tlsrec := flag.String("tlsrec", "", "split the ClientHello into TLS records at these positions, e.g. 1+s,3+s")
 	split := flag.String("split", "", "send the ClientHello in separate TCP writes at these positions")
 	delay := flag.Duration("split-delay", 0, "pause between TCP pieces")
+	fake := flag.Int("fake", 0, "Windows TCP fake prefix: 0 disables, -1 means all but the last byte")
+	ttl := flag.Int("ttl", 4, "TTL for a fake initial transmission")
+	fakeTimeout := flag.Duration("fake-timeout", 3*time.Second, "maximum duration of a native fake operation")
 	verbose := flag.Bool("v", false, "log every connection")
 	flag.Parse()
 
 	opts := desync.Options{SplitDelay: *delay}
+	if *fake != 0 {
+		opts.Fake = &desync.FakeOptions{TTL: *ttl, Prefix: *fake, Timeout: *fakeTimeout}
+	}
 	var err error
 	if opts.TLSRec, err = parseList(*tlsrec); err != nil {
 		log.Fatal(err)
@@ -38,12 +44,15 @@ func main() {
 	if opts.Split, err = parseList(*split); err != nil {
 		log.Fatal(err)
 	}
+	if err := opts.Validate(); err != nil {
+		log.Fatal(err)
+	}
 
 	ln, err := net.Listen("tcp", *listen)
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("desync-socks on %s (tlsrec=%v split=%v delay=%v)", ln.Addr(), opts.TLSRec, opts.Split, *delay)
+	log.Printf("desync-socks on %s (tlsrec=%v split=%v delay=%v fake=%d ttl=%d)", ln.Addr(), opts.TLSRec, opts.Split, *delay, *fake, *ttl)
 	for {
 		c, err := ln.Accept()
 		if err != nil {
@@ -96,8 +105,17 @@ func handle(c net.Conn, opts desync.Options, verbose bool) {
 	}
 	w := desync.WrapConn(up, opts)
 	done := make(chan struct{}, 2)
-	go func() { _, _ = io.Copy(w, c); closeWrite(up); done <- struct{}{} }()
-	go func() { _, _ = io.Copy(c, up); closeWrite(c); done <- struct{}{} }()
+	copyStream := func(dst io.Writer, src io.Reader, halfClose net.Conn, direction string) {
+		started := time.Now()
+		n, err := io.Copy(dst, src)
+		if verbose && err != nil && !errors.Is(err, net.ErrClosed) {
+			log.Printf("relay %s %s: bytes=%d elapsed=%s error=%v", target, direction, n, time.Since(started).Round(time.Millisecond), err)
+		}
+		closeWrite(halfClose)
+		done <- struct{}{}
+	}
+	go copyStream(w, c, up, "client->server")
+	go copyStream(c, up, c, "server->client")
 	<-done
 	<-done
 }
