@@ -1,6 +1,6 @@
 # desync
 
-A Go library for adapting direct TCP connections to networks that filter TLS traffic using deep packet inspection.
+A Go library for adapting direct TCP and UDP traffic to networks that use deep packet inspection.
 
 `desync` runs inside the application that owns the connection. It transforms the first outgoing TLS ClientHello while preserving the handshake seen by the destination server. It does not provide a VPN tunnel or a remote proxy service.
 
@@ -17,8 +17,9 @@ The library exposes these transformations as a small `net.Conn` wrapper, so prox
 | TLS record fragmentation | Splits the ClientHello across multiple valid TLS records. | Windows, Linux, macOS |
 | TCP write splitting | Sends the ClientHello in separate writes, optionally with a delay. TCP segmentation is ultimately controlled by the operating system. | Windows, Linux, macOS |
 | Low-TTL fake prefix | Sends an alternate initial prefix with a short hop limit and restores the original bytes for TCP retransmission. | Windows |
+| Low-TTL UDP fake burst | Sends bounded extra datagrams before initial application datagrams and restores the normal hop limit before the unchanged original payload. | Windows |
 
-Only a connection starting with a TLS ClientHello is transformed. Other traffic and later application writes pass through normally. The library does not intercept system traffic, install a network driver, or require administrator privileges by itself.
+The TCP wrapper transforms only a connection starting with a TLS ClientHello. Other TCP traffic and later application writes pass through normally. UDP is an independent opt-in wrapper. The library does not intercept system traffic, install a network driver, or require administrator privileges by itself.
 
 ## Install
 
@@ -101,6 +102,30 @@ The Windows backend uses a temporary delete-on-close file and native asynchronou
 
 Use `SupportsFake()` to check platform availability. The backend requires a connection exposing `SyscallConn`; unsupported platforms or connection types return an explicit error. Combining fake with TLS record fragmentation is supported; combining fake with TCP write splitting is currently rejected.
 
+### Windows UDP fake burst
+
+```go
+raw, err := net.ListenPacket("udp", ":0")
+if err != nil {
+    return err
+}
+packets, err := desync.WrapPacketConn(raw, desync.UDPOptions{
+    TTL: 4, Repeats: 6, Packets: 3,
+})
+if err != nil {
+    raw.Close()
+    return err
+}
+defer packets.Close()
+_, err = packets.WriteTo(originalDatagram, destinationUDPAddr)
+```
+
+This requires an **unconnected UDP socket** exposing `SyscallConn`; check `SupportsUDPFake()` for platform availability. The default fake payload is 64 zero bytes. `Repeats` is bounded to 1–16 and `Packets` to the first 1–8 application datagrams per peer (defaults: six repeats for the first three). Originals retain their contents, order and source socket. The wrapper owns all writes to the socket; never write directly to the underlying socket concurrently. Peer state is limited to 64 entries per socket with two-minute idle expiry; additional peers pass through while that table is full.
+
+TTL/hop-limit is restored before sending the original datagram, including after a failed fake send. Deadlines remain resettable; `Close` unblocks socket I/O. An inability to restore the hop limit closes the socket. On Windows the owned socket suppresses TTL-expiry ICMP notifications using [`SIO_UDP_NETRESET`](https://learn.microsoft.com/en-us/windows/win32/winsock/winsock-ioctls#sio_udp_netreset), so intentional expiry does not appear as a receive failure. IPv4, IPv6-only and dual-stack IPv4 destinations are covered by native tests.
+
+`packets.Counters()` returns original/fake datagrams, fake errors and tracked peer sessions. A shared `*UDPCounters` in the options aggregates sockets belonging to an outbound. These counters prove injection attempts, not effectiveness against a particular filter. UDP media such as [Discord voice](https://docs.discord.com/developers/topics/voice-connections) still requires a real application/network test; this wrapper does not implement Discord signalling or media encryption.
+
 ## Try a local SOCKS proxy
 
 The repository includes a small SOCKS5 CONNECT proxy for development and integration checks:
@@ -121,14 +146,14 @@ Configure the application being tested to use that SOCKS endpoint. The command d
 
 A proxy core should wrap the outgoing direct TCP socket before any TLS bytes are written. Apply strategies through explicit routing rules and keep a way to switch back to the ordinary route. Existing connections retain their original handshake; reconnect the application when comparing strategies.
 
-Network effectiveness depends on the route and the filtering equipment. Values such as TTL 4 are configuration examples, not universal defaults for every provider. The library currently transforms the first TLS record; it is not a general HTTP manipulation or UDP desynchronization engine.
+Network effectiveness depends on the route and the filtering equipment. Values such as TTL 4 are configuration examples, not universal defaults for every provider. TCP record transformations and UDP fake bursts are separate methods; neither supplies a remote proxy or implements application protocols.
 
 ```sh
 go test -count=1 -timeout=2m ./...
 go vet ./...
 ```
 
-Tests cover parsing, record and write transformations, stream integrity, TLS handshakes, deadlines and cancellation. Windows tests also exercise native resource lifetime, hop-limit restoration, concurrency and pending-transfer behaviour. A real network check is still needed for the intended route and application.
+Tests cover parsing, record and write transformations, stream integrity, TLS handshakes, deadlines and cancellation. Windows tests also exercise native resource lifetime, hop-limit restoration, concurrency, pending-transfer behaviour, and UDP datagram order/source ports/fake limits/IPv4/IPv6. A real network check is still needed for the intended route and application.
 
 ## License
 
