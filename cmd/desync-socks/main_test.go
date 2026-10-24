@@ -1,0 +1,92 @@
+package main
+
+import (
+	"crypto/tls"
+	"encoding/binary"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"testing"
+
+	"github.com/Nemu-x/desync"
+)
+
+// socksDial opens a CONNECT tunnel to host:port through the SOCKS5 proxy at
+// proxy, sending the host as a domain name.
+func socksDial(t *testing.T, proxy, host string, port int) net.Conn {
+	t.Helper()
+	c, err := net.Dial("tcp", proxy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Write([]byte{5, 1, 0}); err != nil {
+		t.Fatal(err)
+	}
+	resp := make([]byte, 2)
+	if _, err := io.ReadFull(c, resp); err != nil || resp[1] != 0 {
+		t.Fatalf("greeting: % x %v", resp, err)
+	}
+	req := []byte{5, 1, 0, 3, byte(len(host))}
+	req = append(req, host...)
+	req = binary.BigEndian.AppendUint16(req, uint16(port))
+	if _, err := c.Write(req); err != nil {
+		t.Fatal(err)
+	}
+	reply := make([]byte, 10)
+	if _, err := io.ReadFull(c, reply); err != nil || reply[1] != 0 {
+		t.Fatalf("connect reply: % x %v", reply, err)
+	}
+	return c
+}
+
+func TestSocksTunnelWithTLSRec(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("through"))
+	}))
+	defer srv.Close()
+	_, portStr, _ := net.SplitHostPort(srv.Listener.Addr().String())
+	port, _ := strconv.Atoi(portStr)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	opts := desync.Options{TLSRec: []desync.Pos{{Offset: 1, FromSNI: true}}, Split: []desync.Pos{{Offset: 1, FromSNI: true}}}
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go handle(c, opts, false)
+		}
+	}()
+
+	conn := socksDial(t, ln.Addr().String(), "localhost", port)
+	tc := tls.Client(conn, &tls.Config{ServerName: "www.youtube.com", InsecureSkipVerify: true})
+	defer tc.Close()
+	if _, err := tc.Write([]byte("GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(tc)
+	if !contains(body, "through") {
+		t.Fatalf("response %q", body)
+	}
+}
+
+func contains(b []byte, s string) bool {
+	return len(b) >= len(s) && string(b[len(b)-len(s):]) == s
+}
+
+func TestParseList(t *testing.T) {
+	ps, err := parseList("1+s, 3+s,,7")
+	if err != nil || len(ps) != 3 || ps[2] != (desync.Pos{Offset: 7}) {
+		t.Fatalf("%v %v", ps, err)
+	}
+	if _, err := parseList("1+x"); err == nil {
+		t.Fatal("bad position accepted")
+	}
+}
