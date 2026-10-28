@@ -29,6 +29,11 @@ go get github.com/Nemu-x/desync
 
 The module uses the Go standard library and has no external runtime dependencies.
 
+For the current architecture, completed work and ordered next steps, see the
+[Desync vNext plan](docs/vnext.md), [source-backed audit](docs/architecture.md) and
+[validation instructions](docs/validation.md). Publishing the library does not
+update an installed client or its pinned core dependency.
+
 ## Use from Go
 
 Wrap an established connection before starting TLS:

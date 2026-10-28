@@ -1,0 +1,101 @@
+{
+  "scope": "Immediate mock application proof; three repetitions, CPU=1, 300ms; median benchmark means, not connection quantiles; no public targets or real-network DPI measurement",
+  "results": {
+    "windows": {
+      "cold": {
+        "medianBenchmarkMeanNS": 2575,
+        "repetitions": [
+          {
+            "nsPerOp": 2575,
+            "probesPerOp": 1,
+            "bytesPerOp": 1848,
+            "allocsPerOp": 21
+          },
+          {
+            "nsPerOp": 2556,
+            "probesPerOp": 1,
+            "bytesPerOp": 1848,
+            "allocsPerOp": 21
+          },
+          {
+            "nsPerOp": 2686,
+            "probesPerOp": 1,
+            "bytesPerOp": 1848,
+            "allocsPerOp": 21
+          }
+        ]
+      },
+      "warm": {
+        "medianBenchmarkMeanNS": 190.2,
+        "repetitions": [
+          {
+            "nsPerOp": 190.2,
+            "probesPerOp": 0,
+            "bytesPerOp": 0,
+            "allocsPerOp": 0
+          },
+          {
+            "nsPerOp": 186.6,
+            "probesPerOp": 0,
+            "bytesPerOp": 0,
+            "allocsPerOp": 0
+          },
+          {
+            "nsPerOp": 267.6,
+            "probesPerOp": 0,
+            "bytesPerOp": 0,
+            "allocsPerOp": 0
+          }
+        ]
+      }
+    },
+    "linux": {
+      "cold": {
+        "medianBenchmarkMeanNS": 4483,
+        "repetitions": [
+          {
+            "nsPerOp": 4588,
+            "probesPerOp": 1,
+            "bytesPerOp": 1848,
+            "allocsPerOp": 21
+          },
+          {
+            "nsPerOp": 4465,
+            "probesPerOp": 1,
+            "bytesPerOp": 1848,
+            "allocsPerOp": 21
+          },
+          {
+            "nsPerOp": 4483,
+            "probesPerOp": 1,
+            "bytesPerOp": 1848,
+            "allocsPerOp": 21
+          }
+        ]
+      },
+      "warm": {
+        "medianBenchmarkMeanNS": 220.8,
+        "repetitions": [
+          {
+            "nsPerOp": 220.8,
+            "probesPerOp": 0,
+            "bytesPerOp": 0,
+            "allocsPerOp": 0
+          },
+          {
+            "nsPerOp": 220.8,
+            "probesPerOp": 0,
+            "bytesPerOp": 0,
+            "allocsPerOp": 0
+          },
+          {
+            "nsPerOp": 277.7,
+            "probesPerOp": 0,
+            "bytesPerOp": 0,
+            "allocsPerOp": 0
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,225 @@
+{
+  "scope": "Same-binary original UDP pin, lifecycle slice and full framing; synthetic 8078-byte hello to capturing sink or 517-byte first write to counting sink; medians across three Go benchmark runs, not per-connection percentiles; CPU=1; Windows200ms/Linux100ms benchtime",
+  "results": {
+    "windows": {
+      "FramingBuffering/baseline/chunk1": {
+        "runs": 3,
+        "ns": 3276264,
+        "bytes": 34946576,
+        "allocs": 8136
+      },
+      "FramingBuffering/baseline/chunk16": {
+        "runs": 3,
+        "ns": 213151,
+        "bytes": 2294220,
+        "allocs": 561
+      },
+      "FramingBuffering/baseline/chunk256": {
+        "runs": 3,
+        "ns": 24917,
+        "bytes": 235208,
+        "allocs": 59
+      },
+      "FramingBuffering/baseline/chunk8078": {
+        "runs": 3,
+        "ns": 2643,
+        "bytes": 16840,
+        "allocs": 9
+      },
+      "FramingBuffering/lifecycle/chunk1": {
+        "runs": 3,
+        "ns": 5593461,
+        "bytes": 34946576,
+        "allocs": 8136
+      },
+      "FramingBuffering/lifecycle/chunk16": {
+        "runs": 3,
+        "ns": 393559,
+        "bytes": 2294220,
+        "allocs": 561
+      },
+      "FramingBuffering/lifecycle/chunk256": {
+        "runs": 3,
+        "ns": 42297,
+        "bytes": 235208,
+        "allocs": 59
+      },
+      "FramingBuffering/lifecycle/chunk8078": {
+        "runs": 3,
+        "ns": 3156,
+        "bytes": 16840,
+        "allocs": 9
+      },
+      "FramingBuffering/vnext/chunk1": {
+        "runs": 3,
+        "ns": 800244,
+        "bytes": 33456,
+        "allocs": 21
+      },
+      "FramingBuffering/vnext/chunk16": {
+        "runs": 3,
+        "ns": 60896,
+        "bytes": 33456,
+        "allocs": 21
+      },
+      "FramingBuffering/vnext/chunk256": {
+        "runs": 3,
+        "ns": 10309,
+        "bytes": 33264,
+        "allocs": 19
+      },
+      "FramingBuffering/vnext/chunk8078": {
+        "runs": 3,
+        "ns": 3254,
+        "bytes": 16840,
+        "allocs": 9
+      },
+      "FramingCPU/baseline/first": {
+        "runs": 3,
+        "ns": 381.1,
+        "bytes": 944,
+        "allocs": 7
+      },
+      "FramingCPU/baseline/later": {
+        "runs": 3,
+        "ns": 14.99,
+        "bytes": 0,
+        "allocs": 0
+      },
+      "FramingCPU/lifecycle/first": {
+        "runs": 3,
+        "ns": 409.7,
+        "bytes": 944,
+        "allocs": 7
+      },
+      "FramingCPU/lifecycle/later": {
+        "runs": 3,
+        "ns": 14.81,
+        "bytes": 0,
+        "allocs": 0
+      },
+      "FramingCPU/vnext/first": {
+        "runs": 3,
+        "ns": 740.8,
+        "bytes": 944,
+        "allocs": 7
+      },
+      "FramingCPU/vnext/later": {
+        "runs": 3,
+        "ns": 14.63,
+        "bytes": 0,
+        "allocs": 0
+      }
+    },
+    "linux": {
+      "FramingBuffering/baseline/chunk1": {
+        "runs": 3,
+        "ns": 3326310,
+        "bytes": 34946576,
+        "allocs": 8136
+      },
+      "FramingBuffering/baseline/chunk16": {
+        "runs": 3,
+        "ns": 221806,
+        "bytes": 2294223,
+        "allocs": 561
+      },
+      "FramingBuffering/baseline/chunk256": {
+        "runs": 3,
+        "ns": 22813,
+        "bytes": 235208,
+        "allocs": 59
+      },
+      "FramingBuffering/baseline/chunk8078": {
+        "runs": 3,
+        "ns": 1855,
+        "bytes": 16840,
+        "allocs": 9
+      },
+      "FramingBuffering/lifecycle/chunk1": {
+        "runs": 3,
+        "ns": 3295075,
+        "bytes": 34946576,
+        "allocs": 8136
+      },
+      "FramingBuffering/lifecycle/chunk16": {
+        "runs": 3,
+        "ns": 226368,
+        "bytes": 2294223,
+        "allocs": 561
+      },
+      "FramingBuffering/lifecycle/chunk256": {
+        "runs": 3,
+        "ns": 22369,
+        "bytes": 235208,
+        "allocs": 59
+      },
+      "FramingBuffering/lifecycle/chunk8078": {
+        "runs": 3,
+        "ns": 1911,
+        "bytes": 16840,
+        "allocs": 9
+      },
+      "FramingBuffering/vnext/chunk1": {
+        "runs": 3,
+        "ns": 565156,
+        "bytes": 33456,
+        "allocs": 21
+      },
+      "FramingBuffering/vnext/chunk16": {
+        "runs": 3,
+        "ns": 41107,
+        "bytes": 33456,
+        "allocs": 21
+      },
+      "FramingBuffering/vnext/chunk256": {
+        "runs": 3,
+        "ns": 6343,
+        "bytes": 33264,
+        "allocs": 19
+      },
+      "FramingBuffering/vnext/chunk8078": {
+        "runs": 3,
+        "ns": 2031,
+        "bytes": 16840,
+        "allocs": 9
+      },
+      "FramingCPU/baseline/first": {
+        "runs": 3,
+        "ns": 282.1,
+        "bytes": 944,
+        "allocs": 7
+      },
+      "FramingCPU/baseline/later": {
+        "runs": 3,
+        "ns": 10.54,
+        "bytes": 0,
+        "allocs": 0
+      },
+      "FramingCPU/lifecycle/first": {
+        "runs": 3,
+        "ns": 278.6,
+        "bytes": 944,
+        "allocs": 7
+      },
+      "FramingCPU/lifecycle/later": {
+        "runs": 3,
+        "ns": 10.99,
+        "bytes": 0,
+        "allocs": 0
+      },
+      "FramingCPU/vnext/first": {
+        "runs": 3,
+        "ns": 490.1,
+        "bytes": 944,
+        "allocs": 7
+      },
+      "FramingCPU/vnext/later": {
+        "runs": 3,
+        "ns": 9.355,
+        "bytes": 0,
+        "allocs": 0
+      }
+    }
+  }
+}
