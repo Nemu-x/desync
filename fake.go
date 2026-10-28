@@ -41,6 +41,9 @@ func (o Options) Validate() error {
 	if err := o.ClientHello.validate(); err != nil {
 		return err
 	}
+	if err := o.Random.validate(o.ClientHello.limits()); err != nil {
+		return err
+	}
 	if o.Fake == nil {
 		return nil
 	}
@@ -50,7 +53,7 @@ func (o Options) Validate() error {
 	if o.Fake.Timeout < 0 {
 		return fmt.Errorf("desync: fake timeout must not be negative")
 	}
-	if len(o.Split) > 0 {
+	if o.splits() {
 		return fmt.Errorf("desync: fake and TCP split cannot be combined yet")
 	}
 	if !SupportsFake() {
