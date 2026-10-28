@@ -130,6 +130,10 @@ TTL/hop-limit is restored before sending the original datagram, including after 
 
 `packets.Counters()` returns original/fake datagrams, fake errors and tracked peer sessions. A shared `*UDPCounters` in the options aggregates sockets belonging to an outbound. These counters prove injection attempts, not effectiveness against a particular filter. UDP media such as [Discord voice](https://docs.discord.com/developers/topics/voice-connections) still requires a real application/network test; this wrapper does not implement Discord signalling or media encryption.
 
+## Optional strategy controller
+
+The independent [`controller`](docs/controller.md) subpackage selects opaque strategy IDs using caller-configured application probes. It provides per-network/destination/probe-contract caching, shared discovery, bounded concurrency/deadlines/attempts, negative caching, last-known-good ranking, optional background revalidation, manual override and versioned snapshots. The core connection wrapper never invokes it. It has no built-in public probe targets, routing changes or application-traffic replay. See the runnable local HTTPS example in `controller/example_test.go`.
+
 ## Try a local SOCKS proxy
 
 The repository includes a small SOCKS5 CONNECT proxy for development and integration checks:
