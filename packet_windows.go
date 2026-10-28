@@ -18,7 +18,7 @@ func configureUDPFake(raw syscall.RawConn) error {
 	var operationErr error
 	err := raw.Control(func(fd uintptr) {
 		socket := syscall.Handle(fd)
-		kind, err := syscall.GetsockoptInt(socket, syscall.SOL_SOCKET, 0x1008) // Winsock SO_TYPE
+		kind, err := getsockoptInt(socket, syscall.SOL_SOCKET, 0x1008) // Winsock SO_TYPE
 		if err != nil || kind != syscall.SOCK_DGRAM {
 			operationErr = ErrUDPFakeRequiresSocket
 			return
@@ -45,7 +45,7 @@ func sendUDPFake(pc net.PacketConn, raw syscall.RawConn, opts UDPOptions, addr n
 		if udp, ok := addr.(*net.UDPAddr); ok && udp.IP.To4() != nil {
 			option.level, option.option = syscall.IPPROTO_IP, syscall.IP_TTL
 		}
-		old, getErr := syscall.GetsockoptInt(socket, option.level, option.option)
+		old, getErr := getsockoptInt(socket, option.level, option.option)
 		if getErr != nil {
 			operationErr = os.NewSyscallError("read UDP TTL", getErr)
 			return

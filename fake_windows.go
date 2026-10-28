@@ -160,7 +160,7 @@ func setFakeTTL(socket syscall.Handle, ttl int) ([]savedTTL, error) {
 	// Reading IP_TTL can succeed on an IPv6-only Windows socket even though
 	// setting it fails. A connected TCP socket has one peer family: change
 	// only its applicable option, including IPv4-mapped dual-stack peers.
-	old, err := syscall.GetsockoptInt(socket, option.level, option.option)
+	old, err := getsockoptInt(socket, option.level, option.option)
 	if err != nil {
 		return nil, os.NewSyscallError("read fake TTL", err)
 	}

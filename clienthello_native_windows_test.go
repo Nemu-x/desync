@@ -37,7 +37,7 @@ func TestNativeFakeTTLSelectsPeerFamilyAndRestores(t *testing.T) {
 			var normalTTL int
 			if err = raw.Control(func(fd uintptr) {
 				socket := syscall.Handle(fd)
-				before, err := syscall.GetsockoptInt(socket, level, option)
+				before, err := getsockoptInt(socket, level, option)
 				if err != nil {
 					t.Error(err)
 					return
@@ -56,7 +56,7 @@ func TestNativeFakeTTLSelectsPeerFamilyAndRestores(t *testing.T) {
 				if len(saved) != 1 || saved[0].level != level || saved[0].option != option || saved[0].value != before {
 					t.Errorf("wrong snapshot: %+v", saved)
 				}
-				during, err := syscall.GetsockoptInt(socket, level, option)
+				during, err := getsockoptInt(socket, level, option)
 				if err != nil || during != 4 {
 					t.Errorf("fake TTL=%d error=%v", during, err)
 				}
@@ -64,7 +64,7 @@ func TestNativeFakeTTLSelectsPeerFamilyAndRestores(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err = raw.Control(func(fd uintptr) {
-				after, err := syscall.GetsockoptInt(syscall.Handle(fd), level, option)
+				after, err := getsockoptInt(syscall.Handle(fd), level, option)
 				if err != nil || after != normalTTL {
 					t.Errorf("restored TTL=%d want=%d error=%v", after, normalTTL, err)
 				}
