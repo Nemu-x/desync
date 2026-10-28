@@ -25,8 +25,12 @@ go test -run '^$' -fuzz '^FuzzClientHelloAssembly$' -fuzztime=30s -fuzzminimizet
 go test ./controller -run '^$' -fuzz '^FuzzControllerTarget$' -fuzztime=15s -fuzzminimizetime=1s -parallel=2
 ```
 
-The CI workflow runs tests/vet on Windows, Linux and macOS with Go 1.26, Linux
-race tests, and a separate Go 1.20.14 minimum-version check. This describes the
+The CI workflow (`.github/workflows/ci.yml`) runs gofmt, `go mod tidy -diff` and
+vet for Linux, Windows and macOS; tests with coverage on Windows, Linux and macOS
+with Go 1.26; Linux race tests; a 30-second smoke run of each fuzz target; a Go
+1.20.14 minimum-version check; and builds for Windows, Linux and macOS
+(amd64/arm64), Linux armv7 and Android arm64. The `CI` job passes only when every
+other job does, so it is the one check to require on `main`. This describes the
 workflow configuration; inspect the actual Actions result for a given revision.
 The module's declared minimum remains Go 1.20 and it uses only the standard library.
 
