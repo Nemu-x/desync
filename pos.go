@@ -7,8 +7,8 @@ import (
 	"strings"
 )
 
-// Pos is a position in the first TLS record of a connection: an absolute byte
-// offset, or an offset from the start of the server name ("+s").
+// Pos is an absolute byte offset in the original TLS wire input, or an offset
+// from the server name ("+s") in logical handshake bytes, skipping record headers.
 type Pos struct {
 	Offset  int
 	FromSNI bool
