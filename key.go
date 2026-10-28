@@ -71,6 +71,13 @@ func (o Options) Key() string {
 		b.WriteString(",split:")
 		writeRandomList(&b, r.Split)
 	}
+	// Appended only when set, so keys of options without it are unchanged.
+	if o.SplitWait != SplitWaitNone || o.SplitWaitTimeout != 0 {
+		b.WriteString(";wait=")
+		b.WriteString(o.SplitWait.String())
+		b.WriteString(",timeout:")
+		b.WriteString(strconv.FormatInt(int64(o.SplitWaitTimeout), 10))
+	}
 	return b.String()
 }
 

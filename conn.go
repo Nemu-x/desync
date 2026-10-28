@@ -24,6 +24,12 @@ type Options struct {
 	Split []Pos
 	// SplitDelay is a pause between the TCP pieces; 0 sends them back to back.
 	SplitDelay time.Duration
+	// SplitWait waits, before each further TCP piece, until the kernel
+	// reports the previous bytes as sent or acknowledged. Unsupported modes
+	// fail Validate and the first Write; see PlatformCapabilities.
+	SplitWait SplitWait
+	// SplitWaitTimeout bounds each SplitWait wait (default 2 s, max 1 min).
+	SplitWaitTimeout time.Duration
 	// Random adds bounded random record/write cuts; nil keeps the strategy
 	// deterministic. Include Key() in a strategy ID so it is never reused for
 	// a different randomization policy or seed.
@@ -76,7 +82,7 @@ func WrapConn(c net.Conn, opts Options) net.Conn {
 		opts.Fake = &fake
 	}
 	w := &Conn{Conn: c, opts: opts, closed: make(chan struct{}), err: opts.Validate()}
-	if opts.splits() && opts.SplitDelay > 0 {
+	if opts.splits() && (opts.SplitDelay > 0 || opts.SplitWait != SplitWaitNone) {
 		w.deadlineChanged = make(chan struct{})
 	}
 	return w
@@ -293,10 +299,22 @@ func (c *Conn) sendHello(rec []byte, frame helloFrame) (int, error) {
 		splitCuts = frame.cuts(c.opts.Split, false)
 	}
 	tcpCuts := mapCuts(splitCuts, recCuts)
+	var ack ackObserver
+	if len(tcpCuts) > 0 {
+		var err error
+		if ack, err = c.splitObserver(); err != nil {
+			return 0, err
+		}
+	}
 	written := 0
 	for i, end := range append(tcpCuts, len(out)) {
 		if end <= start || end > len(out) {
 			continue
+		}
+		if i > 0 && ack != nil {
+			if err := c.waitSplit(ack, int64(written)); err != nil {
+				return originalWriteCount(written, recCuts), err
+			}
 		}
 		if i > 0 && c.opts.SplitDelay > 0 {
 			if err := c.waitWriteDelay(c.opts.SplitDelay); err != nil {
