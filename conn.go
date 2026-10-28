@@ -24,10 +24,21 @@ type Options struct {
 	Split []Pos
 	// SplitDelay is a pause between the TCP pieces; 0 sends them back to back.
 	SplitDelay time.Duration
+	// Random adds bounded random record/write cuts; nil keeps the strategy
+	// deterministic. Include Key() in a strategy ID so it is never reused for
+	// a different randomization policy or seed.
+	Random *RandomOptions
 }
 
 // Enabled reports whether the options change anything.
-func (o Options) Enabled() bool { return o.Fake != nil || len(o.TLSRec) > 0 || len(o.Split) > 0 }
+func (o Options) Enabled() bool {
+	return o.Fake != nil || len(o.TLSRec) > 0 || len(o.Split) > 0 || o.Random.enabled()
+}
+
+// splits reports whether the hello can be sent in more than one TCP write.
+func (o Options) splits() bool {
+	return len(o.Split) > 0 || (o.Random != nil && len(o.Random.Split) > 0)
+}
 
 // Conn applies Options to the first ClientHello written to an underlying conn.
 type Conn struct {
@@ -54,6 +65,7 @@ func WrapConn(c net.Conn, opts Options) net.Conn {
 	}
 	opts.TLSRec = append([]Pos(nil), opts.TLSRec...)
 	opts.Split = append([]Pos(nil), opts.Split...)
+	opts.Random = opts.Random.clone()
 	if opts.ClientHello != nil {
 		limits := *opts.ClientHello
 		opts.ClientHello = &limits
@@ -64,7 +76,7 @@ func WrapConn(c net.Conn, opts Options) net.Conn {
 		opts.Fake = &fake
 	}
 	w := &Conn{Conn: c, opts: opts, closed: make(chan struct{}), err: opts.Validate()}
-	if len(opts.Split) > 0 && opts.SplitDelay > 0 {
+	if opts.splits() && opts.SplitDelay > 0 {
 		w.deadlineChanged = make(chan struct{})
 	}
 	return w
@@ -245,7 +257,20 @@ func (c *Conn) Write(p []byte) (int, error) {
 // retaining existing input record headers and any coalesced tail payload.
 func (c *Conn) sendHello(rec []byte, frame helloFrame) (int, error) {
 	out := rec
-	recCuts := frame.cuts(c.opts.TLSRec, true)
+	var recCuts, splitCuts []int
+	if r := c.opts.Random; r.enabled() {
+		// Draw record ranges first, then write ranges, so a seed reproduces.
+		// One bounded allocation holds both cut lists.
+		rng := c.newCutRand()
+		nRec := len(c.opts.TLSRec) + randomCutCapacity(r.TLSRec)
+		buf := make([]int, 0, nRec+len(c.opts.Split)+randomCutCapacity(r.Split))
+		recCuts = frame.randomCuts(frame.positionCuts(buf[:0:nRec], c.opts.TLSRec), r.TLSRec, &rng)
+		recCuts = frame.normalizeCuts(recCuts, true)
+		splitCuts = frame.randomCuts(frame.positionCuts(buf[nRec:nRec], c.opts.Split), r.Split, &rng)
+		splitCuts = frame.normalizeCuts(splitCuts, false)
+	} else {
+		recCuts = frame.cuts(c.opts.TLSRec, true)
+	}
 	if len(recCuts) > 0 {
 		out = fragmentHello(rec, frame, recCuts)
 	}
@@ -264,7 +289,10 @@ func (c *Conn) sendHello(rec []byte, frame helloFrame) (int, error) {
 		}
 		return len(rec), nil
 	}
-	tcpCuts := mapCuts(frame.cuts(c.opts.Split, false), recCuts)
+	if !c.opts.Random.enabled() {
+		splitCuts = frame.cuts(c.opts.Split, false)
+	}
+	tcpCuts := mapCuts(splitCuts, recCuts)
 	written := 0
 	for i, end := range append(tcpCuts, len(out)) {
 		if end <= start || end > len(out) {

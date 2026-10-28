@@ -22,6 +22,7 @@ Fuzz one target at a time:
 ```sh
 go test -run '^$' -fuzz '^FuzzClientHelloFraming$' -fuzztime=30s -fuzzminimizetime=1s -parallel=2
 go test -run '^$' -fuzz '^FuzzClientHelloAssembly$' -fuzztime=30s -fuzzminimizetime=1s -parallel=2
+go test -run '^$' -fuzz '^FuzzRandomCuts$' -fuzztime=30s -fuzzminimizetime=1s -parallel=2
 go test ./controller -run '^$' -fuzz '^FuzzControllerTarget$' -fuzztime=15s -fuzzminimizetime=1s -parallel=2
 ```
 
@@ -98,5 +99,7 @@ requires comparable connection p50/p95/p99 and real application outcomes.
   report zero even after transmission started; never infer replay safety from that.
 - The controller only returns IDs and proofs; consumers must supply their catalog,
   application contracts and persistence. Manual choices are unverified.
-- No ACK timing heuristic, randomization, new named Mihomo outbound, subscriber
+- Randomization is opt-in through `Options.Random`; `Options.Key()` identifies a
+  strategy including its policy and seed. Seeded draws are tied to the key version.
+- No ACK timing heuristic, new named Mihomo outbound, subscriber
   reserve implementation or client migration was added by these library stages.

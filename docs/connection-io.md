@@ -24,7 +24,7 @@ Record lengths and the 24-bit handshake length are parsed independently. SNI can
 
 `ParseHello` now requires the complete first handshake and returns `ErrIncompleteClientHello` when only its first fragment is available. `Hello.RecordLen` retains its original meaning: the length of the first input record. `Hello.SNIOffset` is the start in the original wire input; the hostname may cross headers, so use `Hello.SNI` rather than assuming its wire bytes are contiguous. This deliberately replaces the old false success with missing SNI for incomplete input.
 
-Absolute positions count original wire bytes. SNI-relative positions count logical handshake bytes and skip existing headers. Missing-SNI/out-of-range cuts remain ignored. TLS record cuts cannot create an empty record or split an existing header. There is no randomization or automatic strategy substitution in this path.
+Absolute positions count original wire bytes. SNI-relative positions count logical handshake bytes and skip existing headers. Missing-SNI/out-of-range cuts remain ignored. TLS record cuts cannot create an empty record or split an existing header. Optional `Options.Random` ranges add cuts drawn once per connection among logical handshake byte boundaries, under the same framing rules; a nil policy keeps the path deterministic. There is no automatic strategy substitution in this path.
 
 ```go
 opts := desync.Options{

@@ -3,7 +3,11 @@ package desync
 import "sort"
 
 func (f helloFrame) cuts(positions []Pos, recordOnly bool) []int {
-	var cuts []int
+	return f.normalizeCuts(f.positionCuts(nil, positions), recordOnly)
+}
+
+// positionCuts appends the wire offsets of deterministic positions.
+func (f helloFrame) positionCuts(cuts []int, positions []Pos) []int {
 	end := f.handshakeEnd()
 	for _, p := range positions {
 		at := p.Offset
@@ -17,6 +21,12 @@ func (f helloFrame) cuts(positions []Pos, recordOnly bool) []int {
 			cuts = append(cuts, at)
 		}
 	}
+	return cuts
+}
+
+// normalizeCuts sorts and deduplicates cuts in place. Record cuts also drop
+// offsets inside or at the edges of an existing record, so no record is empty.
+func (f helloFrame) normalizeCuts(cuts []int, recordOnly bool) []int {
 	sort.Ints(cuts)
 	unique := cuts[:0]
 	span := 0

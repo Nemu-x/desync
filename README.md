@@ -76,6 +76,23 @@ func connect(ctx context.Context, address, serverName string) (*tls.Conn, error)
 
 SNI-relative positions skip existing record headers. Positions without an SNI, outside the ClientHello, or on an existing record boundary are ignored. `TLSRec` positions choose record boundaries; `Split` positions choose write boundaries.
 
+### Random cuts
+
+`Options.Random` adds bounded random record and write cuts on top of the fixed positions; nil keeps a strategy fully deterministic. Each `RandomCut` draws `Count` cuts uniformly from the inclusive range `From`..`To` (both absolute or both SNI-relative), at least `MinPiece` bytes apart:
+
+```go
+opts := desync.Options{
+    TLSRec: []desync.Pos{{Offset: 1, FromSNI: true}},
+    Random: &desync.RandomOptions{
+        TLSRec: []desync.RandomCut{{From: desync.Pos{Offset: -8, FromSNI: true}, To: desync.Pos{Offset: 8, FromSNI: true}, Count: 2, MinPiece: 2}},
+        Split:  []desync.RandomCut{{From: desync.Pos{Offset: 1}, To: desync.Pos{Offset: 120}}},
+        Seed:   0, // 0: a new seed per connection; nonzero: the same cuts on every connection
+    },
+}
+```
+
+Random cuts never change handshake bytes, create empty records or writes, or add delays beyond `SplitDelay`. A nonzero `Seed` reproduces a test or a bug report. `opts.Key()` is a stable description of every option, the random policy and seed included: derive cached strategy IDs from it so an ID never silently changes meaning.
+
 A ClientHello may arrive across several records and `Write` calls. Assembly is bounded by default to a 64 KiB handshake, 256 records and a 5-second timeout for incomplete input; `Options.ClientHello` changes these limits. A complete ClientHello written at once starts no timer.
 
 ### Low-TTL fake prefix (Windows)
