@@ -1,25 +1,34 @@
 # desync
 
-A Go library for adapting direct TCP and UDP traffic to networks that use deep packet inspection.
+[![CI](https://github.com/Nemu-x/desync/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Nemu-x/desync/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/Nemu-x/desync.svg)](https://pkg.go.dev/github.com/Nemu-x/desync)
+[![Go 1.20+](https://img.shields.io/badge/go-1.20%2B-00ADD8?logo=go)](go.mod)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-`desync` runs inside the application that owns the connection. It transforms the first outgoing TLS ClientHello while preserving the handshake seen by the destination server. It does not provide a VPN tunnel or a remote proxy service.
+A Go library that adapts direct TCP and UDP connections to networks with deep packet inspection.
 
-## Why it exists
+`desync` wraps a socket your program already owns and reshapes how the first TLS ClientHello goes out on the wire. The server still receives the exact same handshake. It is not a VPN or a proxy service, needs no driver or administrator rights, and depends only on the Go standard library.
 
-A network filter and the destination server can interpret the same connection differently. TLS record boundaries, TCP write boundaries and the first transmission of selected bytes can influence what the filter sees without changing the final TLS handshake delivered to the server.
+```go
+conn := desync.WrapConn(raw, desync.Options{
+    TLSRec: []desync.Pos{{Offset: 1, FromSNI: true}}, // split the ClientHello right after the start of the server name
+})
+```
 
-The library exposes these transformations as a small `net.Conn` wrapper, so proxy cores and other Go applications can apply them to selected connections. Routing, service selection and configuration remain under the application's control.
+## Why
+
+A filter on the path and the destination server can read the same bytes differently. Where the TLS records end, how the bytes are split into writes, and what the first transmission of a segment contains can change what the filter sees, while the server reassembles an identical handshake.
 
 ## Methods
 
-| Method | Behaviour | Platforms |
-| --- | --- | --- |
-| TLS record fragmentation | Splits the ClientHello across multiple valid TLS records. | Windows, Linux, macOS |
-| TCP write splitting | Sends the ClientHello in separate writes, optionally with a delay. TCP segmentation is ultimately controlled by the operating system. | Windows, Linux, macOS |
-| Low-TTL fake prefix | Sends an alternate initial prefix with a short hop limit and restores the original bytes for TCP retransmission. | Windows |
-| Low-TTL UDP fake burst | Sends bounded extra datagrams before initial application datagrams and restores the normal hop limit before the unchanged original payload. | Windows |
+| Method | What it does | Windows | Linux | macOS |
+| --- | --- | :---: | :---: | :---: |
+| TLS record fragmentation (`TLSRec`) | Splits the ClientHello into several valid TLS records | ✓ | ✓ | ✓ |
+| TCP write splitting (`Split`, `SplitDelay`) | Sends the ClientHello in separate writes, optionally with a pause | ✓ | ✓ | ✓ |
+| Low-TTL fake prefix (`Fake`) | First transmission of a prefix carries other bytes with a short hop limit; a retransmission carries the original | ✓ | — | — |
+| Low-TTL UDP burst (`WrapPacketConn`) | Bounded low-TTL datagrams before the first datagrams to each peer; originals are unchanged | ✓ | — | — |
 
-The TCP wrapper transforms only a connection starting with a TLS ClientHello. Other TCP traffic and later application writes pass through normally. UDP is an independent opt-in wrapper. The library does not intercept system traffic, install a network driver, or require administrator privileges by itself.
+Only a connection that starts with a TLS ClientHello is transformed. Any other traffic, and everything after the ClientHello, passes through untouched. Unsupported methods return an explicit error, never a silent fallback to another method. `SupportsFake()` and `SupportsUDPFake()` report platform availability.
 
 ## Install
 
@@ -27,28 +36,11 @@ The TCP wrapper transforms only a connection starting with a TLS ClientHello. Ot
 go get github.com/Nemu-x/desync
 ```
 
-The module uses the Go standard library and has no external runtime dependencies.
+## Usage
 
-For the current architecture, completed work and ordered next steps, see the
-[Desync vNext plan](docs/vnext.md), [source-backed audit](docs/architecture.md) and
-[validation instructions](docs/validation.md). Publishing the library does not
-update an installed client or its pinned core dependency.
-
-## Use from Go
-
-Wrap an established connection before starting TLS:
+Wrap the connection before the first TLS byte is written:
 
 ```go
-package example
-
-import (
-    "context"
-    "crypto/tls"
-    "net"
-
-    "github.com/Nemu-x/desync"
-)
-
 func connect(ctx context.Context, address, serverName string) (*tls.Conn, error) {
     raw, err := (&net.Dialer{}).DialContext(ctx, "tcp", address)
     if err != nil {
@@ -63,10 +55,7 @@ func connect(ctx context.Context, address, serverName string) (*tls.Conn, error)
         return nil, err
     }
 
-    conn := tls.Client(desync.WrapConn(raw, opts), &tls.Config{
-        ServerName: serverName,
-        MinVersion: tls.VersionTLS12,
-    })
+    conn := tls.Client(desync.WrapConn(raw, opts), &tls.Config{ServerName: serverName})
     if err := conn.HandshakeContext(ctx); err != nil {
         conn.Close()
         return nil, err
@@ -75,99 +64,89 @@ func connect(ctx context.Context, address, serverName string) (*tls.Conn, error)
 }
 ```
 
-`WrapConn` returns the original connection when all methods are disabled. Options are copied, including slices, ClientHello limits and the fake payload, so changing the caller's configuration does not alter an existing wrapper.
-
-See [connection I/O contracts](docs/connection-io.md) for buffered/partial writes, deadlines, closing and current parser limitations.
+`WrapConn` returns the connection itself when no method is enabled. Options are copied on wrap, so changing them later does not affect an existing connection. Buffered and partial writes, deadlines and closing are specified in [connection I/O contracts](docs/connection-io.md).
 
 ### Positions
 
-`Pos{Offset: 3}` means byte 3 of the original TLS wire input, beginning with the first record header. `Pos{Offset: 1, FromSNI: true}` means one logical handshake byte after the start of the server name, skipping existing record headers. `ParsePos("1+s")` parses the same position from text. Relative positions without an SNI and positions outside the ClientHello are ignored; TLS record cuts also exclude existing headers and boundaries.
+| Value | `ParsePos` | Meaning |
+| --- | --- | --- |
+| `Pos{Offset: 3}` | `"3"` | Byte 3 of the TLS input, counting from the first record header |
+| `Pos{Offset: 1, FromSNI: true}` | `"1+s"` | One handshake byte after the start of the server name |
+| `Pos{Offset: -2, FromSNI: true}` | `"-2+s"` | Two bytes before the server name |
 
-`TLSRec` positions choose record boundaries. `Split` positions choose write boundaries; `SplitDelay` adds a delay between writes.
+SNI-relative positions skip existing record headers. Positions without an SNI, outside the ClientHello, or on an existing record boundary are ignored. `TLSRec` positions choose record boundaries; `Split` positions choose write boundaries.
 
-ClientHello input may span multiple records or `Write` calls. Incomplete assembly defaults to a 64 KiB handshake limit, 256 input records and a five-second absolute timeout. Set `Options.ClientHello` to customize these bounds; see [connection I/O contracts](docs/connection-io.md). No timer is started for a complete hello supplied in one write.
+A ClientHello may arrive across several records and `Write` calls. Assembly is bounded by default to a 64 KiB handshake, 256 records and a 5-second timeout for incomplete input; `Options.ClientHello` changes these limits. A complete ClientHello written at once starts no timer.
 
-### Windows fake prefix
+### Low-TTL fake prefix (Windows)
 
 ```go
 opts := desync.Options{
     TLSRec: []desync.Pos{{Offset: 1, FromSNI: true}},
-    Fake: &desync.FakeOptions{
-        TTL:    4,
-        Prefix: -1,
-    },
+    Fake:   &desync.FakeOptions{TTL: 4, Prefix: -1},
 }
-if err := opts.Validate(); err != nil {
-    return err
-}
-conn := desync.WrapConn(tcpConn, opts)
 ```
 
-The Windows backend uses a temporary delete-on-close file and native asynchronous socket operations. It restores the original file-cache contents and socket hop limits, submits the remaining normal bytes, and retains native resources until completion or cancellation.
+- `TTL` must expire after the filter and before the server. It depends on the route; 4 is an example, not a default.
+- `Prefix` is measured after record fragmentation. Negative values count from the end; `-1` leaves the last byte for a normal write.
+- `Payload` replaces the bytes of the first transmission; by default an embedded TLS template is used, padded or truncated to the prefix.
+- `Timeout` (default 3 s) bounds the native waits. Write deadlines on the wrapper bound normal writes; `Close` interrupts both.
 
-`Prefix` is measured after TLS record fragmentation. Negative values count from the end; `-1` leaves the last byte for a normal write. `Payload` optionally supplies alternate bytes; otherwise an embedded TLS template is used. It is padded or truncated to the prefix length.
+The backend sends the prefix with `TransmitFile` from a delete-on-close temporary file, then puts the original bytes in the file cache for the retransmission and restores the socket's hop limits. Native resources are kept until the operation completes or is cancelled. An error after a transformed send is terminal for the connection. Fake can be combined with `TLSRec`, not with `Split`.
 
-`Timeout` defaults to three seconds for native queue and completion waits. Set write deadlines on the returned wrapper to bound normal socket writes too. `Close` interrupts outstanding native waits. An error after a transformed send is terminal for that connection.
-
-Use `SupportsFake()` to check platform availability. The backend requires a connection exposing `SyscallConn`; unsupported platforms or connection types return an explicit error. Combining fake with TLS record fragmentation is supported; combining fake with TCP write splitting is currently rejected.
-
-### Windows UDP fake burst
+### Low-TTL UDP burst (Windows)
 
 ```go
-raw, err := net.ListenPacket("udp", ":0")
+pc, err := net.ListenPacket("udp", ":0")
 if err != nil {
     return err
 }
-packets, err := desync.WrapPacketConn(raw, desync.UDPOptions{
-    TTL: 4, Repeats: 6, Packets: 3,
-})
+packets, err := desync.WrapPacketConn(pc, desync.UDPOptions{TTL: 4, Repeats: 6, Packets: 3})
 if err != nil {
-    raw.Close()
+    pc.Close()
     return err
 }
 defer packets.Close()
-_, err = packets.WriteTo(originalDatagram, destinationUDPAddr)
+
+_, err = packets.WriteTo(datagram, peer)
 ```
 
-This requires an **unconnected UDP socket** exposing `SyscallConn`; check `SupportsUDPFake()` for platform availability. The default fake payload is 64 zero bytes. `Repeats` is bounded to 1–16 and `Packets` to the first 1–8 application datagrams per peer (defaults: six repeats for the first three). Originals retain their contents, order and source socket. The wrapper owns all writes to the socket; never write directly to the underlying socket concurrently. Peer state is limited to 64 entries per socket with two-minute idle expiry; additional peers pass through while that table is full.
+- Needs an **unconnected** UDP socket that exposes `SyscallConn`. The wrapper owns all writes to it.
+- `Repeats` (1–16, default 6) low-TTL datagrams go before each of the first `Packets` (1–8, default 3) datagrams to a peer. The default payload is 64 zero bytes.
+- Originals keep their content, order and source port. The hop limit is restored before every original; if it cannot be restored, the socket is closed.
+- Up to 64 peers per socket are tracked, with a 2-minute idle expiry; further peers pass through unchanged.
+- TTL-expired ICMP replies are suppressed on the socket (`SIO_UDP_NETRESET`), so they do not surface as receive errors.
+- `Counters()` reports original and fake datagrams, errors and peers. A shared `*UDPCounters` aggregates several sockets. Counters show what was sent, not whether it helped.
 
-TTL/hop-limit is restored before sending the original datagram, including after a failed fake send. Deadlines remain resettable; `Close` unblocks socket I/O. An inability to restore the hop limit closes the socket. On Windows the owned socket suppresses TTL-expiry ICMP notifications using [`SIO_UDP_NETRESET`](https://learn.microsoft.com/en-us/windows/win32/winsock/winsock-ioctls#sio_udp_netreset), so intentional expiry does not appear as a receive failure. IPv4, IPv6-only and dual-stack IPv4 destinations are covered by native tests.
+## Strategy controller
 
-`packets.Counters()` returns original/fake datagrams, fake errors and tracked peer sessions. A shared `*UDPCounters` in the options aggregates sockets belonging to an outbound. These counters prove injection attempts, not effectiveness against a particular filter. UDP media such as [Discord voice](https://docs.discord.com/developers/topics/voice-connections) still requires a real application/network test; this wrapper does not implement Discord signalling or media encryption.
+The optional [`controller`](docs/controller.md) package picks a verified strategy for a destination and network and caches it. It runs caller-supplied application probes with bounded concurrency, attempts and deadlines, shares discovery between callers, keeps negative results and a last-known-good ranking, and supports manual override and background revalidation. The connection wrapper does not depend on it, and it ships no probe targets of its own. A runnable example with a local HTTPS server is in [`controller/example_test.go`](controller/example_test.go).
 
-## Optional strategy controller
+## desync-socks
 
-The independent [`controller`](docs/controller.md) subpackage selects opaque strategy IDs using caller-configured application probes. It provides per-network/destination/probe-contract caching, shared discovery, bounded concurrency/deadlines/attempts, negative caching, last-known-good ranking, optional background revalidation, manual override and versioned snapshots. The core connection wrapper never invokes it. It has no built-in public probe targets, routing changes or application-traffic replay. See the runnable local HTTPS example in `controller/example_test.go`.
-
-## Try a local SOCKS proxy
-
-The repository includes a small SOCKS5 CONNECT proxy for development and integration checks:
+A minimal SOCKS5 CONNECT proxy for trying methods on a real network:
 
 ```sh
 go run ./cmd/desync-socks -listen 127.0.0.1:10802 -tlsrec 3+s
+go run ./cmd/desync-socks -listen 127.0.0.1:10802 -tlsrec 1+s -fake -1 -ttl 4   # Windows
 ```
 
-On Windows:
+Point the application under test at the SOCKS endpoint. It does not change system proxy settings, has no authentication and no UDP.
+
+## Effectiveness
+
+Whether a method works depends on the route and the filtering equipment. Test on the network you target, compare strategies on fresh connections (an established connection keeps its handshake), and keep the ordinary route available as a way back.
+
+## Development
 
 ```sh
-go run ./cmd/desync-socks -listen 127.0.0.1:10802 -tlsrec 1+s -fake -1 -ttl 4
-```
-
-Configure the application being tested to use that SOCKS endpoint. The command does not change system proxy settings. It supports TCP CONNECT without authentication; it does not implement UDP association.
-
-## Integration and testing
-
-A proxy core should wrap the outgoing direct TCP socket before any TLS bytes are written. Apply strategies through explicit routing rules and keep a way to switch back to the ordinary route. Existing connections retain their original handshake; reconnect the application when comparing strategies.
-
-Network effectiveness depends on the route and the filtering equipment. Values such as TTL 4 are configuration examples, not universal defaults for every provider. TCP record transformations and UDP fake bursts are separate methods; neither supplies a remote proxy or implements application protocols.
-
-```sh
-go test -count=1 -timeout=2m ./...
+go test -count=1 -timeout=3m ./...
 go vet ./...
+go test -race -count=1 ./...
 ```
 
-Tests cover parsing, record and write transformations, stream integrity, TLS handshakes, deadlines and cancellation. Windows tests also exercise native resource lifetime, hop-limit restoration, concurrency, pending-transfer behaviour, and UDP datagram order/source ports/fake limits/IPv4/IPv6. A real network check is still needed for the intended route and application.
+Fuzz targets, benchmarks and what has been verified are listed in [validation](docs/validation.md). Design notes: [architecture](docs/architecture.md), [roadmap](docs/vnext.md).
 
 ## License
 
-MIT. See [LICENSE](LICENSE). Notices for included third-party material are retained in [third_party](third_party).
+MIT, see [LICENSE](LICENSE). The default fake TLS template comes from ByeDPI (MIT); its notice is in [third_party](third_party).
