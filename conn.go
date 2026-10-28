@@ -8,10 +8,12 @@ import (
 	"time"
 )
 
-// Options selects what happens to the first TLS record (the ClientHello) of a
+// Options selects what happens to the first complete TLS ClientHello of a
 // connection. Everything after it is passed through untouched, and a
 // connection that does not start with a ClientHello is never modified.
 type Options struct {
+	// ClientHello bounds incomplete assembly. Nil/zero fields use defaults.
+	ClientHello *ClientHelloOptions
 	// Fake selects a platform-specific low-TTL first transmission.
 	Fake *FakeOptions
 	// TLSRec splits the ClientHello into separate TLS records at these
@@ -27,20 +29,21 @@ type Options struct {
 // Enabled reports whether the options change anything.
 func (o Options) Enabled() bool { return o.Fake != nil || len(o.TLSRec) > 0 || len(o.Split) > 0 }
 
-// Conn applies Options to the first record written to an underlying conn.
+// Conn applies Options to the first ClientHello written to an underlying conn.
 type Conn struct {
 	net.Conn
 	opts Options
 
 	mu              sync.Mutex
-	buf             []byte // a ClientHello written in pieces, until it is complete
-	err             error  // terminal configuration or first-write failure
+	pending         *helloAssembly // guarded by mu; only while input is incomplete
+	err             error          // terminal configuration or first-write failure
 	closed          chan struct{}
 	closeOnce       sync.Once
-	done            bool // guarded by mu; first record handled (or not a hello)
+	done            bool // guarded by mu; ClientHello handled (or not a hello)
 	deadlineMu      sync.Mutex
 	writeDeadline   time.Time
 	deadlineChanged chan struct{}
+	watch           *helloWatch // guarded by deadlineMu
 }
 
 // WrapConn returns c with the options applied, or c itself when they are
@@ -51,6 +54,10 @@ func WrapConn(c net.Conn, opts Options) net.Conn {
 	}
 	opts.TLSRec = append([]Pos(nil), opts.TLSRec...)
 	opts.Split = append([]Pos(nil), opts.Split...)
+	if opts.ClientHello != nil {
+		limits := *opts.ClientHello
+		opts.ClientHello = &limits
+	}
 	if opts.Fake != nil {
 		fake := *opts.Fake
 		fake.Payload = append([]byte(nil), fake.Payload...)
@@ -68,9 +75,12 @@ func (c *Conn) NetConn() net.Conn { return c.Conn }
 
 func (c *Conn) Close() error {
 	c.closeOnce.Do(func() {
+		c.deadlineMu.Lock()
 		if c.closed != nil {
 			close(c.closed)
 		}
+		c.stopHelloAssemblyLocked()
+		c.deadlineMu.Unlock()
 	})
 	return c.Conn.Close()
 }
@@ -106,14 +116,21 @@ func (c *Conn) updateWriteDeadline(t time.Time) {
 }
 
 func (c *Conn) writeState() (time.Time, <-chan struct{}, error) {
+	c.deadlineMu.Lock()
+	deadline, changed := c.writeDeadline, c.deadlineChanged
+	var assemblyErr error
+	if c.watch != nil {
+		assemblyErr = c.watch.err
+	}
+	c.deadlineMu.Unlock()
+	if assemblyErr != nil {
+		return deadline, changed, assemblyErr
+	}
 	select {
 	case <-c.closed:
 		return time.Time{}, nil, net.ErrClosed
 	default:
 	}
-	c.deadlineMu.Lock()
-	deadline, changed := c.writeDeadline, c.deadlineChanged
-	c.deadlineMu.Unlock()
 	if !deadline.IsZero() && !time.Now().Before(deadline) {
 		return deadline, changed, os.ErrDeadlineExceeded
 	}
@@ -152,7 +169,7 @@ func (c *Conn) waitWriteDelay(delay time.Duration) error {
 	}
 }
 
-// Write holds a ClientHello until its first record is complete, then sends it
+// Write holds a ClientHello until its whole handshake is complete, then sends it
 // desynchronised; every other write goes straight through.
 func (c *Conn) Write(p []byte) (int, error) {
 	if len(p) == 0 {
@@ -161,6 +178,7 @@ func (c *Conn) Write(p []byte) (int, error) {
 	c.mu.Lock()
 	if c.err != nil {
 		err := c.err
+		c.pending = nil
 		c.mu.Unlock()
 		_ = c.Close()
 		return 0, err
@@ -171,48 +189,48 @@ func (c *Conn) Write(p []byte) (int, error) {
 	}
 	defer c.mu.Unlock()
 	if _, _, err := c.writeState(); err != nil {
+		if c.helloAssemblyError() != nil {
+			c.pending = nil
+		}
 		return 0, err
 	}
-
-	data := p
-	buffered := len(c.buf)
-	if len(c.buf) > 0 {
-		data = append(c.buf, p...)
-		c.buf = nil
-	} else if !looksLikeHello(p) {
-		c.done = true
-		return c.Conn.Write(p)
-	}
-
-	rl, err := recordLen(data)
-	switch {
-	case err == errShort || (err == nil && len(data) < rl):
-		// Wait for the rest of the record (a TLS client always sends the
-		// whole hello before it reads).
-		// Copy: p belongs to the caller and may be reused once we return.
-		c.buf = append([]byte(nil), data...)
-		return len(p), nil
-	case err != nil:
-		c.done = true
-		c.buf = nil
-		n, werr := writeAllCount(c.Conn, data)
-		if werr != nil {
-			c.err = werr
+	data, tail, frame, buffered, inspectErr := c.inspectHello(p)
+	if inspectErr == errShort {
+		if err := c.beginHelloAssembly(); err != nil {
+			c.pending = nil
+			c.err = err
 			_ = c.Close()
+			return 0, err
 		}
-		return currentWriteCount(n, buffered, len(p)), werr
+		return len(p), nil
 	}
-
+	if err := c.stopHelloAssembly(); err != nil {
+		c.pending = nil
+		c.err = err
+		_ = c.Close()
+		return 0, err
+	}
+	c.pending = nil
 	c.done = true
-	c.buf = nil
-	n, err := c.sendFirst(data[:rl])
+	if inspectErr != nil && inspectErr != ErrNotClientHello {
+		c.err = inspectErr
+		_ = c.Close()
+		return 0, inspectErr
+	}
+	var n int
+	var err error
+	if inspectErr == ErrNotClientHello {
+		n, err = writeAllCount(c.Conn, data)
+	} else {
+		n, err = c.sendHello(data, frame)
+	}
 	if err != nil {
 		c.err = err
 		_ = c.Close()
 		return currentWriteCount(n, buffered, len(p)), err
 	}
-	if len(data) > rl {
-		tailN, tailErr := writeAllCount(c.Conn, data[rl:])
+	if len(tail) > 0 {
+		tailN, tailErr := writeAllCount(c.Conn, tail)
 		n += tailN
 		if tailErr != nil {
 			c.err = tailErr
@@ -223,16 +241,13 @@ func (c *Conn) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// sendFirst writes the first record with the options applied.
-func (c *Conn) sendFirst(rec []byte) (int, error) {
-	h, err := ParseHello(rec)
-	if err != nil {
-		return writeAllCount(c.Conn, rec)
-	}
+// sendHello transforms only positions inside the logical ClientHello, while
+// retaining existing input record headers and any coalesced tail payload.
+func (c *Conn) sendHello(rec []byte, frame helloFrame) (int, error) {
 	out := rec
-	recCuts := resolve(c.opts.TLSRec, h, recordHeaderLen, len(rec))
+	recCuts := frame.cuts(c.opts.TLSRec, true)
 	if len(recCuts) > 0 {
-		out = FragmentRecord(rec, recCuts)
+		out = fragmentHello(rec, frame, recCuts)
 	}
 	start := 0
 	if c.opts.Fake != nil {
@@ -249,7 +264,7 @@ func (c *Conn) sendFirst(rec []byte) (int, error) {
 		}
 		return len(rec), nil
 	}
-	tcpCuts := mapCuts(resolve(c.opts.Split, h, 0, len(rec)), recCuts)
+	tcpCuts := mapCuts(frame.cuts(c.opts.Split, false), recCuts)
 	written := 0
 	for i, end := range append(tcpCuts, len(out)) {
 		if end <= start || end > len(out) {

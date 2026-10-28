@@ -70,15 +70,17 @@ func connect(ctx context.Context, address, serverName string) (*tls.Conn, error)
 }
 ```
 
-`WrapConn` returns the original connection when all methods are disabled. Options are copied, including slices and the fake payload, so changing the caller's configuration does not alter an existing wrapper.
+`WrapConn` returns the original connection when all methods are disabled. Options are copied, including slices, ClientHello limits and the fake payload, so changing the caller's configuration does not alter an existing wrapper.
 
 See [connection I/O contracts](docs/connection-io.md) for buffered/partial writes, deadlines, closing and current parser limitations.
 
 ### Positions
 
-`Pos{Offset: 3}` means byte 3 of the original record. `Pos{Offset: 1, FromSNI: true}` means one byte after the start of the server name. `ParsePos("1+s")` parses the same position from text.
+`Pos{Offset: 3}` means byte 3 of the original TLS wire input, beginning with the first record header. `Pos{Offset: 1, FromSNI: true}` means one logical handshake byte after the start of the server name, skipping existing record headers. `ParsePos("1+s")` parses the same position from text. Relative positions without an SNI and positions outside the ClientHello are ignored; TLS record cuts also exclude existing headers and boundaries.
 
 `TLSRec` positions choose record boundaries. `Split` positions choose write boundaries; `SplitDelay` adds a delay between writes.
+
+ClientHello input may span multiple records or `Write` calls. Incomplete assembly defaults to a 64 KiB handshake limit, 256 input records and a five-second absolute timeout. Set `Options.ClientHello` to customize these bounds; see [connection I/O contracts](docs/connection-io.md). No timer is started for a complete hello supplied in one write.
 
 ### Windows fake prefix
 

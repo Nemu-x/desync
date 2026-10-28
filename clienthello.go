@@ -15,18 +15,21 @@ const (
 // ErrNotClientHello means the bytes are not the start of a TLS ClientHello.
 var ErrNotClientHello = errors.New("desync: not a TLS ClientHello")
 
-// errShort means the bytes look like a ClientHello but the record is not
-// complete yet.
-var errShort = errors.New("desync: incomplete TLS record")
+// ErrIncompleteClientHello means that record framing or the complete first
+// ClientHello handshake needs more bytes. It is not a successful missing SNI.
+var ErrIncompleteClientHello = errors.New("desync: incomplete TLS ClientHello")
 
-// Hello describes the first TLS record of a connection when it carries a
-// ClientHello. Offsets are absolute positions in the bytes that were parsed.
+var errShort = ErrIncompleteClientHello
+
+// Hello describes the first complete ClientHello. Offsets refer to original
+// wire bytes, including any existing TLS record headers.
 type Hello struct {
 	// RecordLen is the full length of the first record, header included.
 	RecordLen int
 	// SNI is the server name, "" when the hello has none.
 	SNI string
-	// SNIOffset is where the server name bytes start; -1 without SNI.
+	// SNIOffset is where the server name starts; -1 without SNI. The name can
+	// cross record headers, so use SNI rather than slicing contiguous wire bytes.
 	SNIOffset int
 }
 
@@ -57,99 +60,85 @@ func recordLen(b []byte) (int, error) {
 	return recordHeaderLen + n, nil
 }
 
-// ParseHello parses the first TLS record in b as a ClientHello. b must hold the
-// whole first record; a ClientHello spread over several records is reported
-// without SNI (SNIOffset -1), never misparsed.
+// ParseHello parses a complete ClientHello across consecutive TLS records.
+// It uses default size/record limits, ignores bytes after its final record,
+// and returns ErrIncompleteClientHello if the handshake is not complete.
+// RecordLen remains the length of the first input record for compatibility.
 func ParseHello(b []byte) (Hello, error) {
-	rl, err := recordLen(b)
-	if err != nil {
-		return Hello{}, err
-	}
-	if len(b) < rl {
-		return Hello{}, errShort
-	}
-	h := Hello{RecordLen: rl, SNIOffset: -1}
-
-	p := b[recordHeaderLen:rl]
-	if len(p) < 4 || p[0] != handshakeClientHelo {
-		return Hello{}, ErrNotClientHello
-	}
-	hsLen := int(p[1])<<16 | int(p[2])<<8 | int(p[3])
-	body := p[4:]
-	if hsLen < len(body) {
-		body = body[:hsLen]
-	}
-	base := recordHeaderLen + 4 // absolute offset of body[0]
-
-	// legacy_version(2) random(32)
-	i := 2 + 32
-	// legacy_session_id
-	if i+1 > len(body) {
-		return h, nil
-	}
-	i += 1 + int(body[i])
-	// cipher_suites
-	if i+2 > len(body) {
-		return h, nil
-	}
-	i += 2 + (int(body[i])<<8 | int(body[i+1]))
-	// legacy_compression_methods
-	if i+1 > len(body) {
-		return h, nil
-	}
-	i += 1 + int(body[i])
-	// extensions
-	if i+2 > len(body) {
-		return h, nil
-	}
-	extEnd := i + 2 + (int(body[i])<<8 | int(body[i+1]))
-	i += 2
-	if extEnd > len(body) {
-		// The hello continues in a later record: what is here is still valid
-		// to walk, it just ends early.
-		extEnd = len(body)
-	}
-	for i+4 <= extEnd {
-		typ := int(body[i])<<8 | int(body[i+1])
-		l := int(body[i+2])<<8 | int(body[i+3])
-		data := i + 4
-		if data+l > extEnd {
-			return h, nil
-		}
-		if typ == extServerName {
-			name, off := parseServerName(body[data : data+l])
-			if off >= 0 {
-				h.SNI = name
-				h.SNIOffset = base + data + off
-			}
-			return h, nil
-		}
-		i = data + l
-	}
-	return h, nil
+	var s helloScanner
+	f, err := s.scan(b, (*ClientHelloOptions)(nil).limits())
+	return f.hello, err
 }
 
-// parseServerName returns the first host_name entry of a server_name
-// extension and its offset inside ext, or -1.
-func parseServerName(ext []byte) (string, int) {
-	if len(ext) < 2 {
-		return "", -1
+func parseHelloBody(wire []byte, f *helloFrame) error {
+	f.hello = Hello{RecordLen: f.records.first.end, SNIOffset: -1}
+	r := helloReader{wire: wire, records: f.records, limit: f.size, at: recordHeaderLen}
+	if !r.skip(4 + 2 + 32) {
+		return ErrNotClientHello
 	}
-	listEnd := 2 + (int(ext[0])<<8 | int(ext[1]))
-	if listEnd > len(ext) {
-		return "", -1
+	session, ok := r.u8()
+	if !ok || session > 32 || !r.skip(int(session)) {
+		return ErrNotClientHello
 	}
-	for i := 2; i+3 <= listEnd; {
-		typ := ext[i]
-		l := int(ext[i+1])<<8 | int(ext[i+2])
-		start := i + 3
-		if start+l > listEnd {
-			return "", -1
+	suites, ok := r.u16()
+	if !ok || suites < 2 || suites%2 != 0 || !r.skip(suites) {
+		return ErrNotClientHello
+	}
+	compression, ok := r.u8()
+	if !ok || compression == 0 || !r.skip(int(compression)) {
+		return ErrNotClientHello
+	}
+	if r.remaining() == 0 {
+		return nil
+	} // TLS 1.2 may omit the extension vector.
+	extensions, ok := r.u16()
+	if !ok || extensions != r.remaining() {
+		return ErrNotClientHello
+	}
+	seenSNI := false
+	for r.remaining() > 0 {
+		typ, ok := r.u16()
+		if !ok {
+			return ErrNotClientHello
 		}
-		if typ == sniHostNameType && l > 0 {
-			return string(ext[start : start+l]), start
+		n, ok := r.u16()
+		if !ok || n > r.remaining() {
+			return ErrNotClientHello
 		}
-		i = start + l
+		if typ != extServerName {
+			r.skip(n)
+			continue
+		}
+		if seenSNI {
+			return ErrNotClientHello
+		}
+		seenSNI = true
+		end := r.logical + n
+		list, ok := r.u16()
+		if !ok || list == 0 || r.logical+list != end {
+			return ErrNotClientHello
+		}
+		for r.logical < end {
+			if end-r.logical < 3 {
+				return ErrNotClientHello
+			}
+			kind, _ := r.u8()
+			size, _ := r.u16()
+			if size == 0 || size > end-r.logical {
+				return ErrNotClientHello
+			}
+			if kind == sniHostNameType {
+				if f.hello.SNIOffset >= 0 {
+					return ErrNotClientHello
+				}
+				r.normalize()
+				f.sniLogical = r.logical
+				f.hello.SNIOffset = r.at
+				f.hello.SNI = r.name(size)
+			} else {
+				r.skip(size)
+			}
+		}
 	}
-	return "", -1
+	return nil
 }

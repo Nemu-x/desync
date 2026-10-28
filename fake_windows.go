@@ -143,28 +143,34 @@ func restoreFakeTTL(socket syscall.Handle, saved []savedTTL) error {
 }
 
 func setFakeTTL(socket syscall.Handle, ttl int) ([]savedTTL, error) {
-	var saved []savedTTL
-	for _, v := range []savedTTL{{level: syscall.IPPROTO_IP, option: syscall.IP_TTL}, {level: syscall.IPPROTO_IPV6, option: syscall.IPV6_UNICAST_HOPS}} {
-		old, err := syscall.GetsockoptInt(socket, v.level, v.option)
-		if err != nil {
-			continue
-		}
-		v.value = old
-		saved = append(saved, v)
+	peer, err := syscall.Getpeername(socket)
+	if err != nil {
+		return nil, os.NewSyscallError("read fake TCP peer", err)
 	}
-	if len(saved) == 0 {
-		return nil, fmt.Errorf("desync: fake connection has no supported IP TTL option")
-	}
-	// Some Windows providers alias these options. Snapshot both before
-	// changing either, otherwise the second read may capture our fake TTL.
-	for _, v := range saved {
-		if err := syscall.SetsockoptInt(socket, v.level, v.option, ttl); err != nil {
-			restoreErr := restoreFakeTTL(socket, saved)
-			if restoreErr != nil {
-				return nil, fmt.Errorf("set TTL: %v; restore: %w", err, restoreErr)
-			}
-			return nil, os.NewSyscallError("set fake TTL", err)
+	option := savedTTL{level: syscall.IPPROTO_IP, option: syscall.IP_TTL}
+	switch addr := peer.(type) {
+	case *syscall.SockaddrInet4:
+	case *syscall.SockaddrInet6:
+		if net.IP(addr.Addr[:]).To4() == nil {
+			option.level, option.option = syscall.IPPROTO_IPV6, syscall.IPV6_UNICAST_HOPS
 		}
+	default:
+		return nil, fmt.Errorf("desync: fake TCP peer has unsupported address family")
+	}
+	// Reading IP_TTL can succeed on an IPv6-only Windows socket even though
+	// setting it fails. A connected TCP socket has one peer family: change
+	// only its applicable option, including IPv4-mapped dual-stack peers.
+	old, err := syscall.GetsockoptInt(socket, option.level, option.option)
+	if err != nil {
+		return nil, os.NewSyscallError("read fake TTL", err)
+	}
+	option.value = old
+	saved := []savedTTL{option}
+	if err := syscall.SetsockoptInt(socket, option.level, option.option, ttl); err != nil {
+		if restoreErr := restoreFakeTTL(socket, saved); restoreErr != nil {
+			return nil, fmt.Errorf("set TTL: %v; restore: %w", err, restoreErr)
+		}
+		return nil, os.NewSyscallError("set fake TTL", err)
 	}
 	return saved, nil
 }

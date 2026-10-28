@@ -38,6 +38,9 @@ func (o Options) Validate() error {
 	if o.SplitDelay < 0 {
 		return fmt.Errorf("desync: split delay must not be negative")
 	}
+	if err := o.ClientHello.validate(); err != nil {
+		return err
+	}
 	if o.Fake == nil {
 		return nil
 	}
