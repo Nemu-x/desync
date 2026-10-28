@@ -28,12 +28,27 @@ go test ./controller -run '^$' -fuzz '^FuzzControllerTarget$' -fuzztime=15s -fuz
 
 The CI workflow (`.github/workflows/ci.yml`) runs gofmt, `go mod tidy -diff` and
 vet for Linux, Windows and macOS; tests with coverage on Windows, Linux and macOS
-with Go 1.26; Linux race tests; a 30-second smoke run of each fuzz target; a Go
-1.20.14 minimum-version check; and builds for Windows, Linux and macOS
+with Go 1.26, each followed by a verbose run of the native capability tests
+(ACK observation, `ProbeConn`, `SIO_TCP_INFO` layout; no root needed); Linux race
+tests; a 30-second smoke run of each fuzz target; Go 1.20.14 minimum-version
+checks on Linux and on Windows (the native fake TCP/UDP backends); and builds for Windows, Linux and macOS
 (amd64/arm64), Linux armv7 and Android arm64. The `CI` job passes only when every
 other job does, so it is the one check to require on `main`. This describes the
 workflow configuration; inspect the actual Actions result for a given revision.
 The module's declared minimum remains Go 1.20 and it uses only the standard library.
+
+## Local verification, 2026-10-29 (platform ACK capabilities)
+
+- Windows: `go test ./...` on Go 1.26.10 (with `-shuffle=on`) and Go 1.20.14; on
+  Go 1.20.14 the native fake TCP/UDP tests failed before this change with
+  `read fake TTL: not supported by windows` and pass after it.
+- `go vet ./...` for GOOS windows, linux and darwin on Go 1.26.10 and 1.20.14;
+  builds for freebsd/amd64, android/arm64, linux/arm, linux/386, windows/386,
+  windows/arm64, darwin/arm64 and js/wasm.
+- Linux in Docker: tests and vet on Go 1.26.9 and 1.20.14, `-race` for all
+  packages, and the split-wait tests 20 times with `-race`.
+- Not verified locally: macOS runtime (only vet/build here; CI runs the tests),
+  Android, real-network paths and Windows versions before 10 1703.
 
 ## Completed local verification, 2026-10-28
 
@@ -50,6 +65,55 @@ The module's declared minimum remains Go 1.20 and it uses only the standard libr
   UDP binding regression. No production manifest or installed core was updated.
 - Controller statement coverage 94.1%, owned HTTPS application-probe example and
   Darwin arm64 compile. No local macOS runtime or native Windows race run is claimed.
+
+## Split wait latency, 2026-10-29
+
+Loopback only; this measures the cost of observing the socket, not a network.
+Intel i7-14700K, Windows 11 26200 (host) and Linux in Docker Desktop (WSL 2
+kernel, Go 1.26.9). Each sample is the duration of the first `Write` of a 517-byte
+ClientHello split into four pieces (three waits) on a fresh connection, 1,000
+connections per row. Windows times use `QueryPerformanceCounter`, because Go's
+monotonic clock there advances in steps of about 0.5 ms. Reproduce with
+`DESYNC_MEASURE=1 go test -run TestMeasureSplitWait -v .`
+
+| Platform | Mode | p50 | p95 | p99 |
+| --- | --- | ---: | ---: | ---: |
+| Windows, Go 1.26.10 | none | 40.2 µs | 56.4 µs | 83.4 µs |
+| Windows, Go 1.26.10 | sent | 48.4 µs | 63.1 µs | 99.4 µs |
+| Windows, Go 1.26.10 | acked | 48.9 µs | 62.9 µs | 83.4 µs |
+| Windows, Go 1.20.14 | none | 59.0 µs | 85.2 µs | 118.2 µs |
+| Windows, Go 1.20.14 | sent | 68.7 µs | 94.9 µs | 120.4 µs |
+| Windows, Go 1.20.14 | acked | 67.1 µs | 88.8 µs | 130.2 µs |
+| Linux, Go 1.26.9 | none | 17.9 µs | 25.9 µs | 65.6 µs |
+| Linux, Go 1.26.9 | sent | 21.2 µs | 35.3 µs | 112.8 µs |
+| Linux, Go 1.26.9 | acked | 21.2 µs | 32.8 µs | 46.3 µs |
+
+On loopback the acknowledgement is usually already there at the first poll, so
+these rows show the query cost: about 3–10 µs per Write on both systems. On a
+real path each wait lasts at least one round trip, plus the polling delay below.
+
+Polling delay: a condition that becomes true 0–4.9 ms after the wait starts
+(500 samples, a stub observer, so only the wrapper's polling is measured) was
+noticed after:
+
+| Platform | p50 | p95 | p99 | max |
+| --- | ---: | ---: | ---: | ---: |
+| Windows, Go 1.26.10 | 0.37 ms | 1.33 ms | 1.49 ms | 1.57 ms |
+| Windows, Go 1.20.14 | 12.6 ms | 15.0 ms | 15.4 ms | 15.9 ms |
+| Linux, Go 1.26.9 | 0.58 ms | 1.05 ms | 1.09 ms | 1.40 ms |
+
+The Go 1.20 Windows row reflects that toolchain's timer resolution (about
+15.6 ms); newer Go versions use high-resolution timers on Windows. The wait
+keeps no goroutine, timer or native handle after it returns. macOS was not
+measured locally; CI runs its functional tests.
+
+ACK observation evidence on loopback: with the peer not reading and a 32 KiB
+receive buffer, Linux reported 983,094 bytes unacknowledged and unsent and
+both modes unmet, then zero after the peer read. On Windows both modes stayed
+unmet while blocked, and were met after the read, but `BytesOut` reached
+1,375,590 for a 1 MiB write (and 100,040 for a 100,000-byte write) with
+`BytesRetrans` zero. Writes up to 16 KiB were counted exactly. This is why the
+Windows observation is reported as not reliable.
 
 ## Measured local overhead
 
@@ -101,5 +165,7 @@ requires comparable connection p50/p95/p99 and real application outcomes.
   application contracts and persistence. Manual choices are unverified.
 - Randomization is opt-in through `Options.Random`; `Options.Key()` identifies a
   strategy including its policy and seed. Seeded draws are tied to the key version.
-- No ACK timing heuristic, new named Mihomo outbound, subscriber
-  reserve implementation or client migration was added by these library stages.
+- `Options.SplitWait` observes the socket's send queue; it is not a timing
+  heuristic. Options without it keep their previous `Key()`.
+- No new named Mihomo outbound, subscriber reserve implementation or client
+  migration was added by these library stages.

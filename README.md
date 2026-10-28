@@ -25,10 +25,13 @@ A filter on the path and the destination server can read the same bytes differen
 | --- | --- | :---: | :---: | :---: |
 | TLS record fragmentation (`TLSRec`) | Splits the ClientHello into several valid TLS records | ✓ | ✓ | ✓ |
 | TCP write splitting (`Split`, `SplitDelay`) | Sends the ClientHello in separate writes, optionally with a pause | ✓ | ✓ | ✓ |
+| Split wait (`SplitWait`) | Before each further piece, waits until the kernel reports the previous bytes as sent or acknowledged | sent, acked¹ | sent, acked | acked |
 | Low-TTL fake prefix (`Fake`) | First transmission of a prefix carries other bytes with a short hop limit; a retransmission carries the original | ✓ | — | — |
 | Low-TTL UDP burst (`WrapPacketConn`) | Bounded low-TTL datagrams before the first datagrams to each peer; originals are unchanged | ✓ | — | — |
 
-Only a connection that starts with a TLS ClientHello is transformed. Any other traffic, and everything after the ClientHello, passes through untouched. Unsupported methods return an explicit error, never a silent fallback to another method. `SupportsFake()` and `SupportsUDPFake()` report platform availability.
+¹ Inferred from counters, not reliable; see [platform capabilities](#platform-capabilities-and-split-wait).
+
+Only a connection that starts with a TLS ClientHello is transformed. Any other traffic, and everything after the ClientHello, passes through untouched. Unsupported methods return an explicit error, never a silent fallback to another method. `PlatformCapabilities()` reports what this build implements on the current OS, and `ProbeConn` checks an actual socket.
 
 ## Install
 
@@ -95,6 +98,34 @@ Random cuts never change handshake bytes, create empty records or writes, or add
 
 A ClientHello may arrive across several records and `Write` calls. Assembly is bounded by default to a 64 KiB handshake, 256 records and a 5-second timeout for incomplete input; `Options.ClientHello` changes these limits. A complete ClientHello written at once starts no timer.
 
+### Platform capabilities and split wait
+
+```go
+caps := desync.PlatformCapabilities()
+// windows: {FakeTCP:true FakeUDP:true TTLControl:true Ack:{Mechanism:SIO_TCP_INFO Sent:true Acked:true Reliable:false}}
+// linux:   {Ack:{Mechanism:SIOCOUTQ/SIOCOUTQNSD Sent:true Acked:true Reliable:true}}
+// darwin:  {Ack:{Mechanism:SO_NWRITE Acked:true Reliable:true}}
+
+opts := desync.Options{
+    Split:            []desync.Pos{{Offset: 1, FromSNI: true}},
+    SplitWait:        desync.SplitWaitAcked, // or SplitWaitSent
+    SplitWaitTimeout: time.Second,           // per wait; default 2 s
+}
+if err := opts.Validate(); errors.Is(err, desync.ErrSplitWaitUnsupported) {
+    // this OS cannot observe it; choose another strategy explicitly
+}
+```
+
+`SplitWait` reads the socket's send queue between pieces: `SplitWaitSent` waits until every byte written so far was transmitted at least once, `SplitWaitAcked` until the peer acknowledged it. The wait ends as soon as the kernel reports the condition. It is not a delay, and it is never replaced by one: an OS or socket that cannot observe the condition fails `Validate` or the first `Write` with `ErrSplitWaitUnsupported` / `ErrSplitWaitRequiresTCP` before anything is sent. `SplitDelay` remains the separate, explicit pause and runs after the wait when both are set.
+
+| OS | Interface | Sent | Acked | Reliable |
+| --- | --- | :---: | :---: | :---: |
+| Linux, Android | `ioctl` `SIOCOUTQ` (unacknowledged bytes), `SIOCOUTQNSD` (unsent bytes) | ✓ | ✓ | ✓ |
+| macOS | `SO_NWRITE` (send-buffer bytes, kept until acknowledged; same value as `TCP_CONNECTION_INFO.tcpi_snd_sbbytes`) | — | ✓ | ✓ |
+| Windows 10 1703+ | `SIO_TCP_INFO` counters (`BytesOut`, `BytesRetrans`, `BytesInFlight`) | ✓ | ✓ | — |
+
+Reliable means the kernel's own queue state is read. Windows has no unsent-bytes value, so the wait compares counter growth with the bytes written; on loopback `BytesOut` exceeded the written bytes for large writes, so the wait can end early. Close, write deadlines (including changes to them) and `SplitWaitTimeout` bound every wait; a timeout returns `ErrSplitWaitTimeout` and closes the connection. Where the observation is reliable, `SplitWaitAcked` writes a piece only after every earlier byte was transmitted and acknowledged, so no segment carries bytes of two pieces; with `SplitWaitSent` a retransmission can still combine them. The OS still divides a piece into segments. Details and measurements: [connection I/O](docs/connection-io.md#split-wait), [validation](docs/validation.md#split-wait-latency-2026-10-29).
+
 ### Low-TTL fake prefix (Windows)
 
 ```go
@@ -145,6 +176,7 @@ A minimal SOCKS5 CONNECT proxy for trying methods on a real network:
 
 ```sh
 go run ./cmd/desync-socks -listen 127.0.0.1:10802 -tlsrec 3+s
+go run ./cmd/desync-socks -listen 127.0.0.1:10802 -split 1+s -split-wait acked
 go run ./cmd/desync-socks -listen 127.0.0.1:10802 -tlsrec 1+s -fake -1 -ttl 4   # Windows
 ```
 
