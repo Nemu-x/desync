@@ -72,6 +72,8 @@ func connect(ctx context.Context, address, serverName string) (*tls.Conn, error)
 
 `WrapConn` returns the original connection when all methods are disabled. Options are copied, including slices and the fake payload, so changing the caller's configuration does not alter an existing wrapper.
 
+See [connection I/O contracts](docs/connection-io.md) for buffered/partial writes, deadlines, closing and current parser limitations.
+
 ### Positions
 
 `Pos{Offset: 3}` means byte 3 of the original record. `Pos{Offset: 1, FromSNI: true}` means one byte after the start of the server name. `ParsePos("1+s")` parses the same position from text.

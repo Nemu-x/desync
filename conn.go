@@ -3,6 +3,7 @@ package desync
 import (
 	"io"
 	"net"
+	"os"
 	"sync"
 	"time"
 )
@@ -31,14 +32,15 @@ type Conn struct {
 	net.Conn
 	opts Options
 
-	mu            sync.Mutex
-	done          bool   // first record handled (or not a ClientHello)
-	buf           []byte // a ClientHello written in pieces, until it is complete
-	err           error  // terminal configuration or first-write failure
-	closed        chan struct{}
-	closeOnce     sync.Once
-	deadlineMu    sync.Mutex
-	writeDeadline time.Time
+	mu              sync.Mutex
+	buf             []byte // a ClientHello written in pieces, until it is complete
+	err             error  // terminal configuration or first-write failure
+	closed          chan struct{}
+	closeOnce       sync.Once
+	done            bool // guarded by mu; first record handled (or not a hello)
+	deadlineMu      sync.Mutex
+	writeDeadline   time.Time
+	deadlineChanged chan struct{}
 }
 
 // WrapConn returns c with the options applied, or c itself when they are
@@ -54,7 +56,11 @@ func WrapConn(c net.Conn, opts Options) net.Conn {
 		fake.Payload = append([]byte(nil), fake.Payload...)
 		opts.Fake = &fake
 	}
-	return &Conn{Conn: c, opts: opts, closed: make(chan struct{}), err: opts.Validate()}
+	w := &Conn{Conn: c, opts: opts, closed: make(chan struct{}), err: opts.Validate()}
+	if len(opts.Split) > 0 && opts.SplitDelay > 0 {
+		w.deadlineChanged = make(chan struct{})
+	}
+	return w
 }
 
 // NetConn returns the wrapped connection.
@@ -71,16 +77,79 @@ func (c *Conn) Close() error {
 
 func (c *Conn) SetDeadline(t time.Time) error {
 	c.deadlineMu.Lock()
-	c.writeDeadline = t
-	c.deadlineMu.Unlock()
-	return c.Conn.SetDeadline(t)
+	defer c.deadlineMu.Unlock()
+	if err := c.Conn.SetDeadline(t); err != nil {
+		return err
+	}
+	c.updateWriteDeadline(t)
+	return nil
 }
 
 func (c *Conn) SetWriteDeadline(t time.Time) error {
 	c.deadlineMu.Lock()
+	defer c.deadlineMu.Unlock()
+	if err := c.Conn.SetWriteDeadline(t); err != nil {
+		return err
+	}
+	c.updateWriteDeadline(t)
+	return nil
+}
+
+// updateWriteDeadline is called with deadlineMu held. Signal every successful
+// change, including clearing/extending a deadline while a split wait is active.
+func (c *Conn) updateWriteDeadline(t time.Time) {
 	c.writeDeadline = t
+	if c.deadlineChanged != nil {
+		close(c.deadlineChanged)
+		c.deadlineChanged = make(chan struct{})
+	}
+}
+
+func (c *Conn) writeState() (time.Time, <-chan struct{}, error) {
+	select {
+	case <-c.closed:
+		return time.Time{}, nil, net.ErrClosed
+	default:
+	}
+	c.deadlineMu.Lock()
+	deadline, changed := c.writeDeadline, c.deadlineChanged
 	c.deadlineMu.Unlock()
-	return c.Conn.SetWriteDeadline(t)
+	if !deadline.IsZero() && !time.Now().Before(deadline) {
+		return deadline, changed, os.ErrDeadlineExceeded
+	}
+	return deadline, changed, nil
+}
+
+// waitWriteDelay implements only the configured pause. It does not observe
+// ACKs or guarantee TCP segment boundaries. Deadline changes and Close wake it.
+func (c *Conn) waitWriteDelay(delay time.Duration) error {
+	end := time.Now().Add(delay)
+	for {
+		deadline, changed, err := c.writeState()
+		if err != nil {
+			return err
+		}
+		until := end
+		if !deadline.IsZero() && deadline.Before(until) {
+			until = deadline
+		}
+		remaining := time.Until(until)
+		if remaining <= 0 {
+			if !deadline.IsZero() && !time.Now().Before(deadline) {
+				return os.ErrDeadlineExceeded
+			}
+			return nil
+		}
+		timer := time.NewTimer(remaining)
+		select {
+		case <-c.closed:
+			timer.Stop()
+			return net.ErrClosed
+		case <-changed:
+			timer.Stop()
+		case <-timer.C:
+		}
+	}
 }
 
 // Write holds a ClientHello until its first record is complete, then sends it
@@ -101,8 +170,12 @@ func (c *Conn) Write(p []byte) (int, error) {
 		return c.Conn.Write(p)
 	}
 	defer c.mu.Unlock()
+	if _, _, err := c.writeState(); err != nil {
+		return 0, err
+	}
 
 	data := p
+	buffered := len(c.buf)
 	if len(c.buf) > 0 {
 		data = append(c.buf, p...)
 		c.buf = nil
@@ -122,33 +195,39 @@ func (c *Conn) Write(p []byte) (int, error) {
 	case err != nil:
 		c.done = true
 		c.buf = nil
-		if _, werr := c.Conn.Write(data); werr != nil {
-			return 0, werr
+		n, werr := writeAllCount(c.Conn, data)
+		if werr != nil {
+			c.err = werr
+			_ = c.Close()
 		}
-		return len(p), nil
+		return currentWriteCount(n, buffered, len(p)), werr
 	}
 
 	c.done = true
 	c.buf = nil
-	if err := c.sendFirst(data[:rl]); err != nil {
+	n, err := c.sendFirst(data[:rl])
+	if err != nil {
 		c.err = err
 		_ = c.Close()
-		return 0, err
+		return currentWriteCount(n, buffered, len(p)), err
 	}
 	if len(data) > rl {
-		if _, err := c.Conn.Write(data[rl:]); err != nil {
-			return 0, err
+		tailN, tailErr := writeAllCount(c.Conn, data[rl:])
+		n += tailN
+		if tailErr != nil {
+			c.err = tailErr
+			_ = c.Close()
+			return currentWriteCount(n, buffered, len(p)), tailErr
 		}
 	}
 	return len(p), nil
 }
 
 // sendFirst writes the first record with the options applied.
-func (c *Conn) sendFirst(rec []byte) error {
+func (c *Conn) sendFirst(rec []byte) (int, error) {
 	h, err := ParseHello(rec)
 	if err != nil {
-		_, err = c.Conn.Write(rec)
-		return err
+		return writeAllCount(c.Conn, rec)
 	}
 	out := rec
 	recCuts := resolve(c.opts.TLSRec, h, recordHeaderLen, len(rec))
@@ -159,43 +238,91 @@ func (c *Conn) sendFirst(rec []byte) error {
 	if c.opts.Fake != nil {
 		prefix, err := fakePrefixLength(len(out), c.opts.Fake.Prefix)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		// Submit the normal tail before waiting for the native prefix. A
 		// low-TTL prefix can still be pending when this tail reaches the peer.
-		return c.sendFake(out[:prefix], fakePayload(c.opts.Fake.Payload, prefix), out[prefix:])
+		if err := c.sendFake(out[:prefix], fakePayload(c.opts.Fake.Payload, prefix), out[prefix:]); err != nil {
+			// A failed native asynchronous send has no reliable prefix count.
+			// Report zero conservatively and terminate; never replay this stream.
+			return 0, err
+		}
+		return len(rec), nil
 	}
 	tcpCuts := mapCuts(resolve(c.opts.Split, h, 0, len(rec)), recCuts)
+	written := 0
 	for i, end := range append(tcpCuts, len(out)) {
 		if end <= start || end > len(out) {
 			continue
 		}
 		if i > 0 && c.opts.SplitDelay > 0 {
-			time.Sleep(c.opts.SplitDelay)
+			if err := c.waitWriteDelay(c.opts.SplitDelay); err != nil {
+				return originalWriteCount(written, recCuts), err
+			}
 		}
-		if err := writeAll(c.Conn, out[start:end]); err != nil {
-			return err
+		n, err := writeAllCount(c.Conn, out[start:end])
+		written += n
+		if err != nil {
+			return originalWriteCount(written, recCuts), err
 		}
 		start = end
 	}
-	return nil
+	return len(rec), nil
 }
 
 func writeAll(w io.Writer, p []byte) error {
+	_, err := writeAllCount(w, p)
+	return err
+}
+
+func writeAllCount(w io.Writer, p []byte) (int, error) {
+	written := 0
 	for len(p) > 0 {
 		n, err := w.Write(p)
 		if n < 0 || n > len(p) {
-			return io.ErrShortWrite
+			return written, io.ErrShortWrite
 		}
+		written += n
 		p = p[n:]
 		if err != nil {
-			return err
+			return written, err
 		}
 		if n == 0 {
-			return io.ErrShortWrite
+			return written, io.ErrShortWrite
 		}
 	}
-	return nil
+	return written, nil
+}
+
+// currentWriteCount excludes bytes already accepted by an earlier buffered
+// Write. Socket progress can include those bytes, but they cannot be counted
+// twice in the result of the current call.
+func currentWriteCount(written, buffered, input int) int {
+	n := written - buffered
+	if n < 0 {
+		return 0
+	}
+	if n > input {
+		return input
+	}
+	return n
+}
+
+// originalWriteCount removes generated TLS headers from a wire-prefix count.
+// A failure inside an inserted header accepts no additional caller bytes.
+func originalWriteCount(wire int, recordCuts []int) int {
+	n := wire
+	for i, cut := range recordCuts {
+		inserted := wire - (cut + i*recordHeaderLen)
+		if inserted <= 0 {
+			break
+		}
+		if inserted > recordHeaderLen {
+			inserted = recordHeaderLen
+		}
+		n -= inserted
+	}
+	return n
 }
 
 // mapCuts moves offsets of the original record to the same bytes in the

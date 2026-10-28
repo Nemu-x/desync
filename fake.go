@@ -35,6 +35,9 @@ type FakeOptions struct {
 func SupportsFake() bool { return supportsFake }
 
 func (o Options) Validate() error {
+	if o.SplitDelay < 0 {
+		return fmt.Errorf("desync: split delay must not be negative")
+	}
 	if o.Fake == nil {
 		return nil
 	}
