@@ -52,6 +52,13 @@ rejected. The caller must supply a new network identity when its relevant route
 changes, and a new `PolicyVersion` when options or probe semantics change. The
 candidate slice is copied; corresponding option values remain caller-owned.
 
+IDs are purely consumer-defined, so derive each ID (or the `PolicyVersion`) from
+`desync.Options.Key()`. The key covers every transformation field, including the
+randomization policy and seed, and carries a version prefix that changes if an
+unchanged value would behave differently, so a cached ID never silently changes
+meaning. An unseeded random policy is one strategy: its key identifies the
+distribution, not one connection's cuts.
+
 ## Defaults and bounds
 
 | Setting | Default | Hard limit |

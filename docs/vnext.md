@@ -32,6 +32,7 @@ application probe and real application tests; a successful TCP dial is insuffici
 | Windows UDP | Existing bounded fake bursts, source-socket preservation, option restoration and counters; the earlier UDP branch is included |
 | Optional controller | Destination/network/probe-contract cache, negative cache, singleflight, finite attempts/deadlines, bounded callbacks, LKG/ranking, manual/off modes, optional stale/background checks |
 | Controller lifecycle | Independent waiter cancellation, late-result rejection, generation invalidation, close/shutdown, bounded diagnostics and caller-owned versioned snapshots |
+| Bounded randomization | Opt-in `Options.Random` record/write cut ranges with count/minimum-piece bounds, optional reproducible seed (per-connection crypto/rand seed otherwise) and `Options.Key()` strategy identity; deterministic options unchanged |
 | Examples and tests | Owned HTTPS application probe, fragmented/malformed TLS, concurrency, deadlines, IPv4/IPv6 and native Windows regressions |
 
 The controller is available as an API. It is **not yet connected to SlothClash or
@@ -80,6 +81,20 @@ Done means capability tests, real supported-platform evidence, bounded cancellat
 and documented limitations. TCP packet segmentation remains OS-controlled.
 
 ### 2. Bounded reproducible splitting/randomization
+
+Status: implemented in the library (`Options.Random`, `RandomOptions`,
+`RandomCut`, `Options.Key`). Ranges reuse `Pos` anchors; cuts are drawn among
+logical handshake byte boundaries, clipped to the ClientHello, at most 16 ranges
+of 64 cuts per list. A nonzero `Seed` reproduces the same cuts on every
+connection; zero reads one crypto/rand seed per connection and draws with
+splitmix64, so a consumer's global `math/rand.Seed` cannot make connections
+alike. Covered by regression tests, the `FuzzRandomCuts` target (byte
+preservation, framing, non-empty writes, bounds, seed reproduction), a seed
+golden test tied to the `desync/v1` key version, a verified loopback TLS
+handshake and first-write benchmarks. On the local i7-14700K benchmark, a
+deterministic first write is 936 B / 9 allocations (928 B / 10 before) and a
+randomized one is 1104 B / 9 allocations; later writes stay allocation-free.
+Consumer wiring (Mihomo/SlothClash) is not part of this milestone.
 
 - Keep deterministic strategies available.
 - Introduce an explicit randomization policy, safe configurable ranges and an
