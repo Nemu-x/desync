@@ -167,6 +167,13 @@ func TestLinuxLowHopDropRetransmitsOriginal(t *testing.T) {
 				opts.Fake = &fake
 			}
 			t.Run(name+"/"+network, func(t *testing.T) { linuxFakeRoundTrip(t, network, opts, true) })
+			// The same with SIOCOUTQNSD denied as on Android: the transmission
+			// is observed through TCP_INFO tcpi_notsent_bytes.
+			t.Run("siocoutqnsd-denied/"+name+"/"+network, func(t *testing.T) {
+				requireNotsentBytes(t)
+				denyOUTQNSD(t, syscall.EACCES, -1)
+				linuxFakeRoundTrip(t, network, opts, true)
+			})
 		}
 	}
 }

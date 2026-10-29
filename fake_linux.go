@@ -13,6 +13,34 @@ import (
 
 const supportsFake = true
 
+// fakeObservesSent: the fake keeps its bytes and the low hop limit until the
+// send queue reports them transmitted, so it needs the socket's unsent-byte
+// count (SIOCOUTQNSD, or TCP_INFO where that is denied, as on Android).
+const fakeObservesSent = true
+
+// prepareFake checks, before any piece is written, that the socket can
+// report its unsent bytes; a socket that cannot fails here, never with a
+// fake sent without that observation.
+func (c *Conn) prepareFake() error {
+	_, _, err := c.fakeObserver()
+	return err
+}
+
+func (c *Conn) fakeObserver() (syscall.RawConn, ackObserver, error) {
+	raw, err := socketOf(c.Conn)
+	if err != nil {
+		return nil, nil, ErrFakeRequiresTCP
+	}
+	obs, err := c.observer(raw)
+	if err != nil {
+		return nil, nil, fmt.Errorf("desync: TCP fake: %w", err)
+	}
+	if err := requireSent(obs, ErrFakeUnsupported); err != nil {
+		return nil, nil, err
+	}
+	return raw, obs, nil
+}
+
 // fakeUnsupportedReason is unused on Linux, where the fake is implemented.
 const fakeUnsupportedReason = ""
 
@@ -139,13 +167,9 @@ func (c *Conn) sendFakePiece(real, payload []byte, queued bool, rest func() erro
 	if err := c.fakeAbort(start); err != nil {
 		return err
 	}
-	raw, err := socketOf(c.Conn)
+	raw, obs, err := c.fakeObserver()
 	if err != nil {
-		return ErrFakeRequiresTCP
-	}
-	obs, err := newAckObserver(raw)
-	if err != nil {
-		return fmt.Errorf("desync: TCP fake: %w", err)
+		return err
 	}
 	ttl, err := c.fakeTTL(raw)
 	if err != nil {

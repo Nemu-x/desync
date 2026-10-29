@@ -74,6 +74,7 @@ type timedAck struct {
 
 func (a timedAck) reached(SplitWait, int64) (bool, error) { return a.clock() >= a.at, nil }
 func (a timedAck) state() (AckState, error)               { return unknownAckState(), nil }
+func (a timedAck) capability() (AckCapability, error)     { return platformAck, nil }
 
 // TestMeasureSplitWaitOvershoot records how long after the condition becomes
 // true the polling wait notices it, for conditions that become true between

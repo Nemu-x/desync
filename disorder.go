@@ -97,9 +97,19 @@ func (c *Conn) prepareFirstPiece(splitObs ackObserver) (*firstPiece, error) {
 		return nil, ErrSocketMethodRequiresTCP
 	}
 	p := &firstPiece{raw: raw, obs: splitObs}
-	if c.opts.Disorder && p.obs == nil {
-		if p.obs, err = newAckObserver(raw); err != nil {
+	if !c.opts.Disorder {
+		return p, nil
+	}
+	if p.obs == nil {
+		if p.obs, err = c.observer(raw); err != nil {
 			return nil, fmt.Errorf("%w: %v", ErrDisorderUnsupported, err)
+		}
+	}
+	if platformDisorder.Observed {
+		// The hop limit is restored only once the piece is reported
+		// transmitted; without that report disorder is not attempted.
+		if err := requireSent(p.obs, ErrDisorderUnsupported); err != nil {
+			return nil, err
 		}
 	}
 	return p, nil

@@ -21,6 +21,7 @@ type fakeCall struct {
 func observeFake(t *testing.T, fail error) *[]fakeCall {
 	t.Helper()
 	var calls []fakeCall
+	prepareFakeFunc = func(*Conn) error { return nil }
 	sendFakePieceFunc = func(c *Conn, real, payload []byte, queued bool, rest func() error) error {
 		calls = append(calls, fakeCall{append([]byte(nil), real...), append([]byte(nil), payload...), queued})
 		if fail != nil {
@@ -31,7 +32,7 @@ func observeFake(t *testing.T, fail error) *[]fakeCall {
 		}
 		return rest()
 	}
-	t.Cleanup(func() { sendFakePieceFunc = (*Conn).sendFakePiece })
+	t.Cleanup(func() { sendFakePieceFunc, prepareFakeFunc = (*Conn).sendFakePiece, (*Conn).prepareFake })
 	return &calls
 }
 

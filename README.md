@@ -21,22 +21,22 @@ A filter on the path and the destination server can read the same bytes differen
 
 ## Methods
 
-| Method | What it does | Windows | Linux | macOS |
-| --- | --- | :---: | :---: | :---: |
-| TLS record fragmentation (`TLSRec`) | Splits the ClientHello into several valid TLS records | ✓ | ✓ | ✓ |
-| TCP write splitting (`Split`, `SplitDelay`) | Sends the ClientHello in separate writes, optionally with a pause | ✓ | ✓ | ✓ |
-| Split wait (`SplitWait`) | Before each further piece, waits until the kernel reports the previous bytes as sent or acknowledged | sent, acked¹ | sent, acked | acked |
-| Disorder (`Disorder`) | The first TCP piece goes out with hop limit 1 and expires; TCP retransmits it after the later pieces | ✓¹ | ✓ | ✓² |
-| Out-of-band byte (`OOB`) | One urgent byte follows the first TCP piece; the server's TCP removes it from the stream | ✓ | ✓ | ✓ |
-| Low-TTL fake piece (`Fake`) | First transmission of a prefix, or of one split piece, carries other bytes with a short hop limit; a retransmission carries the original | ✓ | ✓ | —³ |
-| Decoy ClientHello (`Fake.SNI`, `FromOriginal`, `Randomize`) | The fake bytes are a valid ClientHello for another server name, built from the template or the real hello | ✓ | ✓ | —³ |
-| Fake with split pieces (`Fake` + `Split`, `Disorder`, `OOB`) | The piece ending at the fake prefix is the fake; the pieces around it are ordinary, disorder or out-of-band | ✓ | ✓ | —³ |
-| Low-TTL UDP burst (`WrapPacketConn`) | Bounded low-TTL datagrams before the first datagrams to each peer; originals are unchanged | ✓ | ✓ | ✓ |
-| QUIC Initial decoy (`UDPOptions.Template`, `QUICOnly`) | The burst datagrams are QUIC v1 Initials for another server name; optionally only QUIC Initials get a burst | ✓ | ✓ | ✓ |
+| Method | What it does | Windows | Linux | Android | macOS |
+| --- | --- | :---: | :---: | :---: | :---: |
+| TLS record fragmentation (`TLSRec`) | Splits the ClientHello into several valid TLS records | ✓ | ✓ | ✓ | ✓ |
+| TCP write splitting (`Split`, `SplitDelay`) | Sends the ClientHello in separate writes, optionally with a pause | ✓ | ✓ | ✓ | ✓ |
+| Split wait (`SplitWait`) | Before each further piece, waits until the kernel reports the previous bytes as sent or acknowledged | sent, acked¹ | sent, acked | acked, sent⁴ | acked |
+| Disorder (`Disorder`) | The first TCP piece goes out with hop limit 1 and expires; TCP retransmits it after the later pieces | ✓¹ | ✓ | ✓⁴ | ✓² |
+| Out-of-band byte (`OOB`) | One urgent byte follows the first TCP piece; the server's TCP removes it from the stream | ✓ | ✓ | ✓ | ✓ |
+| Low-TTL fake piece (`Fake`) | First transmission of a prefix, or of one split piece, carries other bytes with a short hop limit; a retransmission carries the original | ✓ | ✓ | ✓⁴ | —³ |
+| Decoy ClientHello (`Fake.SNI`, `FromOriginal`, `Randomize`) | The fake bytes are a valid ClientHello for another server name, built from the template or the real hello | ✓ | ✓ | ✓⁴ | —³ |
+| Fake with split pieces (`Fake` + `Split`, `Disorder`, `OOB`) | The piece ending at the fake prefix is the fake; the pieces around it are ordinary, disorder or out-of-band | ✓ | ✓ | ✓⁴ | —³ |
+| Low-TTL UDP burst (`WrapPacketConn`) | Bounded low-TTL datagrams before the first datagrams to each peer; originals are unchanged | ✓ | ✓ | ✓ | ✓ |
+| QUIC Initial decoy (`UDPOptions.Template`, `QUICOnly`) | The burst datagrams are QUIC v1 Initials for another server name; optionally only QUIC Initials get a burst | ✓ | ✓ | ✓ | ✓ |
 
-Linux includes Android. ¹ Inferred from counters, not reliable; see [platform capabilities](#platform-capabilities-and-split-wait). ² The transmission before the hop limit is restored is inferred, not observed; see [disorder](#disorder-and-out-of-band-byte). ³ Not implementable: macOS cannot make a retransmission carry other bytes than the first transmission; see [connection I/O](docs/connection-io.md#macos-tcp-fake).
+¹ Inferred from counters, not reliable; see [platform capabilities](#platform-capabilities-and-split-wait). ² The transmission before the hop limit is restored is inferred, not observed; see [disorder](#disorder-and-out-of-band-byte). ³ Not implementable: macOS cannot make a retransmission carry other bytes than the first transmission; see [connection I/O](docs/connection-io.md#macos-tcp-fake). ⁴ Per socket: Android does not let apps read `SIOCOUTQNSD` (AOSP sepolicy, `priv_sock_ioctls`), so unsent bytes come from `TCP_INFO` `tcpi_notsent_bytes`, which needs Linux 4.6 or later. `PlatformCapabilities()` therefore lists these methods in `Conditional` (and `Unsupported`) instead of claiming them; `ProbeCapabilities(conn)` decides them on a live socket, and a socket without the field fails the first `Write` with `ErrSplitWaitUnsupported`, `ErrDisorderUnsupported` or `ErrFakeUnsupported` before any byte is sent. See [platform capabilities](#platform-capabilities-and-split-wait).
 
-Only a connection that starts with a TLS ClientHello is transformed. Any other traffic, and everything after the ClientHello, passes through untouched. Unsupported methods return an explicit error, never a silent fallback to another method. `PlatformCapabilities()` reports what this build implements on the current OS, and `ProbeConn` checks an actual socket.
+Only a connection that starts with a TLS ClientHello is transformed. Any other traffic, and everything after the ClientHello, passes through untouched. Unsupported methods return an explicit error, never a silent fallback to another method. `PlatformCapabilities()` reports what this build implements on the current OS, and `ProbeConn` / `ProbeCapabilities` check an actual socket.
 
 ## Install
 
@@ -115,6 +115,13 @@ caps := desync.PlatformCapabilities()
 //           Ack:{Mechanism:SIOCOUTQ/SIOCOUTQNSD Sent:true Acked:true Reliable:true}}
 // darwin:  {FakeUDP:true TTLControl:true OOB:true Disorder:{Supported:true Mechanism:SO_NWRITE}
 //           Ack:{Mechanism:SO_NWRITE Acked:true Reliable:true} Unsupported:map[fake-tcp:no splice: ...]}
+// android: {FakeUDP:true TTLControl:true OOB:true Ack:{Mechanism:SIOCOUTQ Acked:true Reliable:true}
+//           Conditional:map[disorder:... fake-tcp:... split-wait-sent:...]} (also in Unsupported)
+//
+// Android decides some methods per socket; probe one (a loopback connection works):
+caps, err = desync.ProbeCapabilities(conn)
+// android, kernel 4.6+: {FakeTCP:true ... Disorder:{Supported:true Mechanism:TCP_INFO Observed:true Reliable:true}
+//           Ack:{Mechanism:SIOCOUTQ/TCP_INFO Sent:true Acked:true Reliable:true}}
 
 opts := desync.Options{
     Split:            []desync.Pos{{Offset: 1, FromSNI: true}},
@@ -130,11 +137,14 @@ if err := opts.Validate(); errors.Is(err, desync.ErrSplitWaitUnsupported) {
 
 | OS | Interface | Sent | Acked | Reliable |
 | --- | --- | :---: | :---: | :---: |
-| Linux, Android | `ioctl` `SIOCOUTQ` (unacknowledged bytes), `SIOCOUTQNSD` (unsent bytes) | ✓ | ✓ | ✓ |
+| Linux | `ioctl` `SIOCOUTQ` (unacknowledged bytes), `SIOCOUTQNSD` (unsent bytes); `TCP_INFO` `tcpi_notsent_bytes` for a socket where `SIOCOUTQNSD` is denied | ✓ | ✓ | ✓ |
+| Android | `ioctl` `SIOCOUTQ`; unsent bytes from `TCP_INFO` `tcpi_notsent_bytes` (Linux 4.6+), per socket | per socket | ✓ | ✓ |
 | macOS | `SO_NWRITE` (send-buffer bytes, kept until acknowledged; same value as `TCP_CONNECTION_INFO.tcpi_snd_sbbytes`) | — | ✓ | ✓ |
 | Windows 10 1703+ | `SIO_TCP_INFO` counters (`BytesOut`, `BytesRetrans`, `BytesInFlight`) | ✓ | ✓ | — |
 
 Reliable means the kernel's own queue state is read. Windows has no unsent-bytes value, so the wait compares counter growth with the bytes written; on loopback `BytesOut` exceeded the written bytes for large writes, so the wait can end early. Close, write deadlines (including changes to them) and `SplitWaitTimeout` bound every wait; a timeout returns `ErrSplitWaitTimeout` and closes the connection. Where the observation is reliable, `SplitWaitAcked` writes a piece only after every earlier byte was transmitted and acknowledged, so no segment carries bytes of two pieces; with `SplitWaitSent` a retransmission can still combine them. The OS still divides a piece into segments. Details and measurements: [connection I/O](docs/connection-io.md#split-wait), [validation](docs/validation.md#split-wait-latency-2026-10-29).
+
+**Android.** An app's SELinux domain may issue `SIOCOUTQ` (it is `TIOCOUTQ`, in AOSP's `unpriv_tty_ioctls`) but not `SIOCOUTQNSD`, which `system/sepolicy` lists in `priv_sock_ioctls` (Android 8 and later, Termux included): the ioctl fails with `EACCES`. The wrapper then reads the unsent count from `getsockopt(TCP_INFO)` `tcpi_notsent_bytes`, which the kernel computes from the same `write_seq - snd_nxt` and which exists since Linux 4.6. That is decided per socket, when it is first observed, and also applies on Linux wherever `SIOCOUTQNSD` is denied (`EACCES`/`EPERM`). On a kernel without the field, `SplitWaitSent`, `Disorder` and `Fake` cannot be honored: `Validate` accepts them (it cannot see the socket), and the first `Write` fails with `ErrSplitWaitUnsupported`, `ErrDisorderUnsupported` or `ErrFakeUnsupported` (wrapping the `EACCES`) before any byte is sent, never with a substitute. `PlatformCapabilities()` on Android reports only what holds on every socket and lists these three in `Conditional`; `ProbeCapabilities(conn)` returns the capabilities of a live socket, and `ProbeConn(conn)` its `Ack` mechanism (`SIOCOUTQ/SIOCOUTQNSD`, `SIOCOUTQ/TCP_INFO` or `SIOCOUTQ`) and `SentErr`. `desync-probe` probes a loopback connection for this.
 
 ### Disorder and out-of-band byte
 
@@ -147,7 +157,7 @@ opts := desync.Options{
 ```
 
 - Both act on the first TCP piece, so they need `Split` or `Random.Split` positions; a ClientHello where no split position resolves is written in one piece, as with `Split` alone. `TLSRec`, `SplitDelay`, `SplitWaitSent` and `Fake` (on a later piece, see below) combine with them; `Disorder` rejects `SplitWaitAcked` (the dropped piece is acknowledged only after its retransmission).
-- `Disorder` sets hop limit 1 for the first piece, so it expires at the first router. The hop limit is restored before the next piece and on every error, and TCP retransmits the piece with the normal limit after the server received the later pieces. On Linux and Windows the limit is restored only after the kernel reports the piece as transmitted (`SIOCOUTQNSD`, `SIO_TCP_INFO`), bounded by `SplitWaitTimeout` (`ErrSplitWaitTimeout`), the write deadline and `Close`. macOS cannot observe unsent bytes: the piece is written once `SO_NWRITE` reports an empty send buffer, so the kernel builds the segment inside the send call, and `Capabilities.Disorder.Observed` is false.
+- `Disorder` sets hop limit 1 for the first piece, so it expires at the first router. The hop limit is restored before the next piece and on every error, and TCP retransmits the piece with the normal limit after the server received the later pieces. On Linux and Windows the limit is restored only after the kernel reports the piece as transmitted (`SIOCOUTQNSD`, or `TCP_INFO` on Android; `SIO_TCP_INFO`), bounded by `SplitWaitTimeout` (`ErrSplitWaitTimeout`), the write deadline and `Close`. macOS cannot observe unsent bytes: the piece is written once `SO_NWRITE` reports an empty send buffer, so the kernel builds the segment inside the send call, and `Capabilities.Disorder.Observed` is false.
 - `OOB` sends the first piece followed by one byte (`Byte`, default `'a'`) with `MSG_OOB`. The server's TCP takes that byte out of the stream as urgent data, so the application reads the original bytes; an inspecting device that ignores the urgent pointer sees one extra byte. A server using `SO_OOBINLINE`, or a middlebox that clears the URG flag, would put the byte into the stream and break the handshake.
 
 ### Low-TTL fake piece (Windows, Linux)
@@ -164,7 +174,7 @@ opts := desync.Options{
 - `Payload` replaces the bytes of the first transmission; by default an embedded TLS template is used, padded or truncated to the fake piece. `Offset` starts the decoy at a later byte (ByeDPI `--fake-offset`).
 - `Timeout` (default 3 s) bounds the native waits. Write deadlines on the wrapper bound normal writes; `Close` interrupts both.
 
-Windows sends the prefix with `TransmitFile` from a delete-on-close temporary file, then puts the original bytes in the file cache for the retransmission and restores the socket's hop limits; native resources are kept until the operation completes or is cancelled. Linux and Android `vmsplice` a shared page holding the fake bytes into a pipe and `splice` it to the socket, so the send queue references the page instead of a copy; once `SIOCOUTQNSD` reports the prefix transmitted, the page is overwritten with the original bytes, then the hop limit is restored. This needs a route whose device supports scatter-gather (loopback, Ethernet, Wi-Fi, tun and WireGuard do); otherwise the kernel copies the spliced bytes and the server receives the fake, which fails the handshake. An error after a transformed send is terminal for the connection. macOS reports it unsupported (`Capabilities.Unsupported["fake-tcp"]`).
+Windows sends the prefix with `TransmitFile` from a delete-on-close temporary file, then puts the original bytes in the file cache for the retransmission and restores the socket's hop limits; native resources are kept until the operation completes or is cancelled. Linux and Android `vmsplice` a shared page holding the fake bytes into a pipe and `splice` it to the socket, so the send queue references the page instead of a copy; once `SIOCOUTQNSD` (on Android `TCP_INFO`) reports the prefix transmitted, the page is overwritten with the original bytes, then the hop limit is restored. This needs a route whose device supports scatter-gather (loopback, Ethernet, Wi-Fi, tun and WireGuard do); otherwise the kernel copies the spliced bytes and the server receives the fake, which fails the handshake. An error after a transformed send is terminal for the connection. macOS reports it unsupported (`Capabilities.Unsupported["fake-tcp"]`).
 
 Decoy ClientHello (ByeDPI `--fake-sni`, `--fake-tls-mod`):
 
@@ -194,7 +204,7 @@ opts := desync.Options{
 
 - The fake prefix end is one more cut. The fake piece is the piece that ends there and starts at the previous split cut (or at 0); every other piece is an ordinary write, and `Disorder`/`OOB` still act on the first piece. If for a ClientHello the fake piece would be the first piece while `Disorder` or `OOB` is set, the write fails with `ErrFakeFirstPiece` before any byte is sent.
 - `SplitDelay` and `SplitWaitSent` apply between all pieces; `SplitWaitAcked` is rejected (the fake piece is acknowledged only after its retransmission).
-- Linux lowers the hop limit for the fake piece only once `SIOCOUTQNSD` reports the earlier pieces transmitted, so none of them goes out with it (ByeDPI waits the same way). Windows, like ByeDPI, does not wait: the TTL applies to the `TransmitFile` request. The pieces after the fake are written as soon as the native request is submitted.
+- Linux lowers the hop limit for the fake piece only once `SIOCOUTQNSD` (on Android `TCP_INFO`) reports the earlier pieces transmitted, so none of them goes out with it (ByeDPI waits the same way). Windows, like ByeDPI, does not wait: the TTL applies to the `TransmitFile` request. The pieces after the fake are written as soon as the native request is submitted.
 - After an error at or after the fake piece, `Write` counts only the pieces before it.
 
 ### Automatic TTL

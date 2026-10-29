@@ -3,6 +3,7 @@
 package desync
 
 import (
+	"errors"
 	"os"
 	"syscall"
 )
@@ -75,3 +76,7 @@ func readSocketTTL(fd uintptr, ipv6 bool) (int, error) {
 	}
 	return int(def), nil
 }
+
+func (o *darwinAck) capability() (AckCapability, error) { return platformAck, errDarwinUnsent }
+
+var errDarwinUnsent = errors.New("the public interfaces report no unsent bytes")

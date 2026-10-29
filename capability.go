@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -71,11 +72,13 @@ func ParseSplitWait(s string) (SplitWait, error) {
 
 // Capabilities describes what this build of the package implements on the
 // current operating system. It reports availability, not effectiveness on a
-// particular network. ProbeConn checks an actual socket.
+// particular network. A method is reported only when it works on every
+// socket of this OS; ProbeConn and ProbeCapabilities check an actual socket.
 type Capabilities struct {
 	// OS is runtime.GOOS.
 	OS string
-	// FakeTCP reports Options.Fake support (same as SupportsFake).
+	// FakeTCP reports Options.Fake support. It equals SupportsFake except on
+	// Android, where the fake is listed in Conditional instead.
 	FakeTCP bool
 	// FakeUDP reports WrapPacketConn support (same as SupportsUDPFake).
 	FakeUDP bool
@@ -92,8 +95,17 @@ type Capabilities struct {
 	AutoTTL AutoTTLCapability
 	// Unsupported explains, keyed by method ("fake-tcp", "fake-udp",
 	// "disorder", "oob", "auto-ttl-ipv4", "auto-ttl-ipv6"), why a method is
-	// not implemented on this OS.
+	// not implemented on this OS, or (for the methods in Conditional) why it
+	// is not guaranteed.
 	Unsupported map[string]string
+	// Conditional lists, keyed like Unsupported ("split-wait-sent",
+	// "fake-tcp", "disorder"), methods this build implements but whose
+	// availability depends on the socket and kernel, with the reason. They
+	// are reported as unavailable above (and in Unsupported); Validate
+	// accepts them, and a socket that cannot provide them fails the first
+	// Write before any byte is sent. ProbeCapabilities resolves them on a
+	// live connection. Only Android has conditional methods.
+	Conditional map[string]string
 }
 
 // AckCapability describes how SplitWait observes a socket on this OS.
@@ -153,7 +165,102 @@ func PlatformCapabilities() Capabilities {
 	if !supportsOOB {
 		c.Unsupported["oob"] = "not implemented on " + runtime.GOOS
 	}
+	if sentPerSocket {
+		c.lowerSentMethods(sentPerSocketReason, true)
+	}
 	return c
+}
+
+// lowerSentMethods reports the methods that need a socket's unsent-byte
+// count (SplitWaitSent, the Linux fake, observed disorder) as unavailable
+// with reason, and also as Conditional when conditional is set.
+func (c *Capabilities) lowerSentMethods(reason string, conditional bool) {
+	if c.Unsupported == nil {
+		c.Unsupported = map[string]string{}
+	}
+	if conditional && c.Conditional == nil {
+		c.Conditional = map[string]string{}
+	}
+	lower := func(key string) {
+		c.Unsupported[key] = reason
+		if conditional {
+			c.Conditional[key] = reason
+		}
+	}
+	if c.Ack.Sent {
+		c.Ack.Sent = false
+		if i := strings.IndexByte(c.Ack.Mechanism, '/'); i >= 0 {
+			// "SIOCOUTQ/SIOCOUTQNSD": only the first query remains
+			c.Ack.Mechanism = c.Ack.Mechanism[:i]
+		}
+		lower("split-wait-sent")
+	}
+	if c.FakeTCP && fakeObservesSent {
+		c.FakeTCP = false
+		lower("fake-tcp")
+	}
+	if c.Disorder.Supported && c.Disorder.Observed {
+		c.Disorder = DisorderCapability{}
+		lower("disorder")
+	}
+}
+
+// ProbeCapabilities returns PlatformCapabilities adjusted to the socket under
+// c (found like ProbeConn finds it): the SplitWait modes, the TCP fake and
+// disorder are reported as this socket can honor them, and Conditional is
+// resolved (empty). On Android, probe a connection before choosing
+// strategies; a loopback one is enough, because the restriction belongs to
+// the app's SELinux domain and the kernel. The error is ProbeConn's.
+func ProbeCapabilities(c net.Conn) (Capabilities, error) {
+	caps := PlatformCapabilities()
+	conn, err := ProbeConn(c)
+	if err != nil {
+		return caps, err
+	}
+	return caps.withConn(conn), nil
+}
+
+// withConn applies a probe of one socket to the platform capabilities.
+func (c Capabilities) withConn(conn ConnCapabilities) Capabilities {
+	out := c
+	out.Unsupported = make(map[string]string, len(c.Unsupported))
+	for k, v := range c.Unsupported {
+		if _, conditional := c.Conditional[k]; !conditional {
+			out.Unsupported[k] = v
+		}
+	}
+	out.Conditional = nil
+	// Start from what the build implements, then lower what this socket
+	// cannot do.
+	out.Ack, out.FakeTCP, out.Disorder = platformAck, supportsFake, platformDisorder
+	switch {
+	case conn.AckErr != nil:
+		reason := conn.AckErr.Error()
+		if out.Ack.Acked {
+			out.Unsupported["split-wait-acked"] = reason
+		}
+		out.lowerSentMethods(reason, false)
+		out.Ack = AckCapability{}
+		if out.Disorder.Supported {
+			// unobserved disorder (macOS) still needs the acknowledged count
+			out.Disorder = DisorderCapability{}
+			out.Unsupported["disorder"] = reason
+		}
+	case !conn.Ack.Sent:
+		reason := "unsent bytes cannot be observed on this socket"
+		if conn.SentErr != nil {
+			reason = conn.SentErr.Error()
+		}
+		out.lowerSentMethods(reason, false)
+		out.Ack = conn.Ack
+	default:
+		out.Ack = conn.Ack
+		if i := strings.IndexByte(conn.Ack.Mechanism, '/'); i >= 0 && out.Disorder.Observed {
+			// disorder reads the same unsent-byte source as SplitWaitSent
+			out.Disorder.Mechanism = conn.Ack.Mechanism[i+1:]
+		}
+	}
+	return out
 }
 
 // AckState is a snapshot of a socket's send queue. Values that the platform
@@ -176,10 +283,19 @@ type ConnCapabilities struct {
 	// peer), or -1 when it cannot be read; TTLErr explains why.
 	TTL    int
 	TTLErr error
-	// Ack lists the SplitWait modes this socket can honor; AckErr explains a
-	// failed probe, in which case no mode is available.
+	// Ack lists the SplitWait modes this socket can honor, with the
+	// mechanism it uses (on Linux "SIOCOUTQ/SIOCOUTQNSD", "SIOCOUTQ/TCP_INFO"
+	// where SIOCOUTQNSD is denied, as on Android, or "SIOCOUTQ" when neither
+	// reports unsent bytes); AckErr explains a failed probe, in which case no
+	// mode is available.
 	Ack    AckCapability
 	AckErr error
+	// SentErr explains why Ack.Sent is false on a socket whose acknowledged
+	// bytes can be observed (for example SIOCOUTQNSD denied and a kernel
+	// without tcpi_notsent_bytes). The methods that need unsent bytes
+	// (SplitWaitSent, the Linux fake, disorder) fail on this socket before
+	// sending.
+	SentErr error
 	// State is the send-queue snapshot taken by the probe.
 	State AckState
 }
@@ -221,7 +337,10 @@ func ProbeConn(c net.Conn) (ConnCapabilities, error) {
 		out.State = unknownAckState()
 		return out, nil
 	}
-	out.Ack = platformAck
+	out.Ack, out.SentErr = obs.capability()
+	if out.Ack.Sent || !platformAck.Sent {
+		out.SentErr = nil
+	}
 	return out, nil
 }
 
@@ -248,9 +367,40 @@ func socketOf(c net.Conn) (syscall.RawConn, error) {
 // ackObserver samples one socket's send queue. reached reports whether mode
 // holds for every byte written so far; written counts the bytes this wrapper
 // wrote since the observer was created (counter-based platforms need it).
+// capability reports the modes this socket can honor and, when Sent is
+// false, why.
 type ackObserver interface {
 	reached(mode SplitWait, written int64) (bool, error)
 	state() (AckState, error)
+	capability() (AckCapability, error)
+}
+
+// observer returns the send-queue observer of the socket raw, created once
+// per connection: sendHello runs once, under c.mu, and its split wait,
+// disorder and fake share it, so a denied query is attempted only once.
+func (c *Conn) observer(raw syscall.RawConn) (ackObserver, error) {
+	if c.obs != nil {
+		return c.obs, nil
+	}
+	obs, err := newAckObserver(raw)
+	if err != nil {
+		return nil, err
+	}
+	c.obs = obs
+	return obs, nil
+}
+
+// requireSent fails when obs cannot report unsent bytes; base is the
+// method's sentinel error.
+func requireSent(obs ackObserver, base error) error {
+	ack, why := obs.capability()
+	if ack.Sent {
+		return nil
+	}
+	if why == nil {
+		why = errors.New("unsent bytes cannot be observed on this socket")
+	}
+	return fmt.Errorf("%w: %w", base, why)
 }
 
 func (o Options) validateSplitWait() error {
@@ -282,9 +432,14 @@ func (c *Conn) splitObserver() (ackObserver, error) {
 	if err != nil {
 		return nil, err
 	}
-	obs, err := newAckObserver(raw)
+	obs, err := c.observer(raw)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrSplitWaitUnsupported, err)
+	}
+	if c.opts.SplitWait == SplitWaitSent {
+		if err := requireSent(obs, ErrSplitWaitUnsupported); err != nil {
+			return nil, err
+		}
 	}
 	return obs, nil
 }

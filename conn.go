@@ -77,6 +77,8 @@ type Conn struct {
 	watch           *helloWatch // guarded by deadlineMu
 
 	usedTTL atomic.Int32 // the fake's TTL, see FakeTTL
+
+	obs ackObserver // guarded by mu; the socket observer of sendHello, see observer
 }
 
 // WrapConn returns c with the options applied, or c itself when they are
@@ -327,6 +329,11 @@ func (c *Conn) sendHello(rec []byte, frame helloFrame) (int, error) {
 		}
 	}
 	if s.fakeEnd >= 0 {
+		// Before the first piece: a fake that cannot run on this socket
+		// fails while nothing has been written.
+		if err := prepareFakeFunc(c); err != nil {
+			return 0, err
+		}
 		firstEnd := s.fakeEnd
 		if len(s.ends) > 0 && s.ends[0] < firstEnd {
 			firstEnd = s.ends[0]
@@ -421,6 +428,9 @@ func (s *pieceSender) send(i, start int) error {
 
 // sendFakePieceFunc is replaced by tests to observe the fake piece.
 var sendFakePieceFunc = (*Conn).sendFakePiece
+
+// prepareFakeFunc is replaced by tests together with sendFakePieceFunc.
+var prepareFakeFunc = (*Conn).prepareFake
 
 // insertCut adds at to the ascending cuts unless it is already there.
 func insertCut(cuts []int, at int) []int {
