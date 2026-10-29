@@ -213,3 +213,16 @@ func TestControllerProberContract(t *testing.T) {
 		t.Fatal("successful proof must carry the HTTP status")
 	}
 }
+
+// On an OS without socket-dependent methods the loopback probe changes
+// nothing; elsewhere it resolves them.
+func TestPlatformCapabilitiesResolvesConditional(t *testing.T) {
+	caps := platformCapabilities()
+	if len(caps.Conditional) != 0 {
+		t.Fatalf("unresolved: %v", caps.Conditional)
+	}
+	if plat := desync.PlatformCapabilities(); len(plat.Conditional) == 0 &&
+		(caps.Ack != plat.Ack || caps.FakeTCP != plat.FakeTCP || caps.Disorder != plat.Disorder) {
+		t.Fatalf("probed %+v, platform %+v", caps, plat)
+	}
+}

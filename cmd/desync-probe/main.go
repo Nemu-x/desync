@@ -27,8 +27,6 @@ import (
 	"runtime"
 	"strings"
 	"time"
-
-	"github.com/Nemu-x/desync"
 )
 
 //go:embed targets.txt
@@ -140,7 +138,7 @@ func runMain(args []string, stdout, stderr io.Writer) int {
 		return fail("-port must be between 1 and 65535")
 	}
 
-	caps := desync.PlatformCapabilities()
+	caps := platformCapabilities()
 	presets, skipped := availablePresets(caps)
 	if c.set() {
 		cp, err := c.preset()
