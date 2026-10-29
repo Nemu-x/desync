@@ -1,0 +1,28 @@
+# Default targets of desync-probe. One host (or host:port) per line; '#'
+# starts a comment. The list is built into the binary; pass -list FILE to use
+# another one. Hosts were chosen to be stable names that answer HTTPS HEAD.
+
+# Control: expected to work directly on any network.
+ya.ru
+example.com
+
+# YouTube (googlevideo.com video hosts are per-video and change; these do not).
+youtube.com
+www.youtube.com
+i.ytimg.com
+yt3.ggpht.com
+
+# Discord
+discord.com
+gateway.discord.gg
+cdn.discordapp.com
+
+# Other commonly filtered sites
+instagram.com
+www.instagram.com
+x.com
+abs.twimg.com
+rutracker.org
+linkedin.com
+www.linkedin.com
+medium.com
