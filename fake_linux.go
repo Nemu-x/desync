@@ -141,6 +141,10 @@ func (c *Conn) sendFake(real, payload, tail []byte) error {
 	if err != nil {
 		return fmt.Errorf("desync: TCP fake: %w", err)
 	}
+	ttl, err := c.fakeTTL(raw)
+	if err != nil {
+		return err
+	}
 	select {
 	case fakeSlots <- struct{}{}:
 	default:
@@ -151,7 +155,7 @@ func (c *Conn) sendFake(real, payload, tail []byte) error {
 	if err != nil {
 		return err
 	}
-	if err := c.spliceFake(raw, obs, op, real, start); err != nil {
+	if err := c.spliceFake(raw, obs, op, real, ttl, start); err != nil {
 		return fmt.Errorf("desync: TCP fake: %w", err)
 	}
 	// The original prefix is in place and the hop limit restored: the tail
@@ -165,12 +169,12 @@ func (c *Conn) sendFake(real, payload, tail []byte) error {
 // spliceFake transmits the fake prefix with the low hop limit. Whatever
 // happens, the page is rewritten with the original bytes, then the hop limit
 // is restored, then the resources are released.
-func (c *Conn) spliceFake(raw syscall.RawConn, obs ackObserver, op *spliceFake, real []byte, start time.Time) (err error) {
+func (c *Conn) spliceFake(raw syscall.RawConn, obs ackObserver, op *spliceFake, real []byte, ttl int, start time.Time) (err error) {
 	defer func() {
 		op.restore(real)
 		op.release()
 	}()
-	saved, err := lowerHop(raw, c.opts.Fake.TTL)
+	saved, err := lowerHop(raw, ttl)
 	if err != nil {
 		return err
 	}

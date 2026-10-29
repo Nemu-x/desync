@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -73,6 +74,8 @@ type Conn struct {
 	writeDeadline   time.Time
 	deadlineChanged chan struct{}
 	watch           *helloWatch // guarded by deadlineMu
+
+	usedTTL atomic.Int32 // the fake's TTL, see FakeTTL
 }
 
 // WrapConn returns c with the options applied, or c itself when they are
@@ -91,6 +94,10 @@ func WrapConn(c net.Conn, opts Options) net.Conn {
 	if opts.Fake != nil {
 		fake := *opts.Fake
 		fake.Payload = append([]byte(nil), fake.Payload...)
+		if fake.AutoTTL != nil {
+			auto := *fake.AutoTTL
+			fake.AutoTTL = &auto
+		}
 		opts.Fake = &fake
 	}
 	if opts.OOB != nil {
