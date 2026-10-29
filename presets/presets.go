@@ -249,6 +249,21 @@ func UDPIDs(ps []UDPPreset) []string {
 	return out
 }
 
+// CatalogVersion returns "c" followed by 16 hex digits of the SHA-256 of the
+// IDs in order. It changes when a candidate is added, removed, reordered or
+// changes meaning, so it suits controller.Config.PolicyVersion (combined with
+// the application's probe contract version, for example
+// "app-probe-v1:" + CatalogVersion(ids)); joined IDs would exceed the
+// controller's 128-byte limit.
+func CatalogVersion(ids []string) string {
+	h := sha256.New()
+	for _, id := range ids {
+		h.Write([]byte(id))
+		h.Write([]byte{0})
+	}
+	return "c" + hex.EncodeToString(h.Sum(nil)[:8])
+}
+
 // Match is the result of ByID: exactly one of TCP and UDP is set.
 type Match struct {
 	TCP *Preset

@@ -1,13 +1,16 @@
 package presets
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/Nemu-x/desync"
+	"github.com/Nemu-x/desync/controller"
 )
 
 // IDs are part of the desync-probe report format and of persisted settings;
@@ -439,4 +442,31 @@ func TestFeatureStrings(t *testing.T) {
 	if ok, why := Feature(99).Check(simulated("linux")); ok || !strings.Contains(why, "Feature(99)") {
 		t.Errorf("unknown feature: %v %q", ok, why)
 	}
+}
+
+type noProber struct{}
+
+func (noProber) Probe(context.Context, controller.Target, string) (controller.Proof, error) {
+	return controller.Proof{}, errors.New("not used")
+}
+
+// The documented controller setup: preset IDs as candidates, CatalogVersion
+// in the policy version.
+func TestControllerCandidates(t *testing.T) {
+	usable, _ := Available(desync.PlatformCapabilities())
+	ids := IDs(Ranked(usable)[1:])
+	v := CatalogVersion(ids)
+	if len(v) != 17 || v != CatalogVersion(append([]string(nil), ids...)) {
+		t.Fatalf("version %q", v)
+	}
+	if v == CatalogVersion(ids[1:]) || v == CatalogVersion(append([]string{ids[1], ids[0]}, ids[2:]...)) ||
+		CatalogVersion([]string{"ab", "c"}) == CatalogVersion([]string{"a", "bc"}) {
+		t.Fatal("version does not follow the candidates")
+	}
+	all := append(IDs(TCP()), UDPIDs(UDP())...)
+	c, err := controller.New(controller.Config{Candidates: all, PolicyVersion: "app-probe-v1:" + CatalogVersion(all)}, noProber{})
+	if err != nil {
+		t.Fatalf("controller rejects the catalog IDs: %v", err)
+	}
+	c.Close()
 }
