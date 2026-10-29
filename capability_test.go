@@ -29,11 +29,11 @@ func TestPlatformCapabilitiesPerOS(t *testing.T) {
 	case "linux", "android":
 		want = AckCapability{Mechanism: "SIOCOUTQ/SIOCOUTQNSD", Sent: true, Acked: true, Reliable: true}
 		disorder = DisorderCapability{Supported: true, Mechanism: "SIOCOUTQNSD", Observed: true, Reliable: true}
-		ttl, oob, fakeTCP = true, true, true
+		ttl, oob, fakeTCP, fakeUDP = true, true, true, true
 	case "darwin", "ios":
 		want = AckCapability{Mechanism: "SO_NWRITE", Acked: true, Reliable: true}
 		disorder = DisorderCapability{Supported: true, Mechanism: "SO_NWRITE"}
-		ttl, oob = true, true
+		ttl, oob, fakeUDP = true, true, true
 	}
 	if c.Ack != want || c.TTLControl != ttl || c.Disorder != disorder || c.OOB != oob || c.FakeTCP != fakeTCP || c.FakeUDP != fakeUDP {
 		t.Fatalf("%s capabilities: %+v, want ack %+v disorder %+v ttl %v oob %v fake %v/%v", runtime.GOOS, c, want, disorder, ttl, oob, fakeTCP, fakeUDP)
