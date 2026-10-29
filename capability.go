@@ -80,10 +80,17 @@ type Capabilities struct {
 	// FakeUDP reports WrapPacketConn support (same as SupportsUDPFake).
 	FakeUDP bool
 	// TTLControl reports that the package changes and restores a socket's
-	// TTL or hop limit on this OS (used by the fake methods).
+	// TTL or hop limit on this OS (used by Fake, Disorder and the UDP burst).
 	TTLControl bool
+	// Disorder describes Options.Disorder support.
+	Disorder DisorderCapability
+	// OOB reports Options.OOB support.
+	OOB bool
 	// Ack describes send-queue / acknowledgement observation for SplitWait.
 	Ack AckCapability
+	// Unsupported explains, keyed by method ("fake-tcp", "fake-udp",
+	// "disorder", "oob"), why a method is not implemented on this OS.
+	Unsupported map[string]string
 }
 
 // AckCapability describes how SplitWait observes a socket on this OS.
@@ -114,13 +121,29 @@ func (a AckCapability) Supports(mode SplitWait) bool {
 
 // PlatformCapabilities reports what the package implements on this OS.
 func PlatformCapabilities() Capabilities {
-	return Capabilities{
-		OS:         runtime.GOOS,
-		FakeTCP:    supportsFake,
-		FakeUDP:    supportsUDPFake,
-		TTLControl: supportsFake || supportsUDPFake,
-		Ack:        platformAck,
+	c := Capabilities{
+		OS:          runtime.GOOS,
+		FakeTCP:     supportsFake,
+		FakeUDP:     supportsUDPFake,
+		TTLControl:  supportsFake || supportsUDPFake || platformDisorder.Supported,
+		Disorder:    platformDisorder,
+		OOB:         supportsOOB,
+		Ack:         platformAck,
+		Unsupported: map[string]string{},
 	}
+	if !supportsFake {
+		c.Unsupported["fake-tcp"] = fakeUnsupportedReason
+	}
+	if !supportsUDPFake {
+		c.Unsupported["fake-udp"] = "not implemented on " + runtime.GOOS
+	}
+	if !platformDisorder.Supported {
+		c.Unsupported["disorder"] = "not implemented on " + runtime.GOOS
+	}
+	if !supportsOOB {
+		c.Unsupported["oob"] = "not implemented on " + runtime.GOOS
+	}
+	return c
 }
 
 // AckState is a snapshot of a socket's send queue. Values that the platform
@@ -263,14 +286,22 @@ const (
 )
 
 // waitSplit polls obs until the configured condition holds for the written
-// bytes. The poll interval starts with a few scheduler yields, then grows from
-// 50 microseconds to 1 ms. Close, the write deadline (including changes to it) and
-// SplitWaitTimeout bound the wait.
+// bytes, bounded by SplitWaitTimeout.
 func (c *Conn) waitSplit(obs ackObserver, written int64) error {
 	timeout := c.opts.SplitWaitTimeout
 	if timeout == 0 {
 		timeout = defaultSplitWaitTimeout
 	}
+	return c.poll(timeout, ErrSplitWaitTimeout, "split wait", func() (bool, error) {
+		return obs.reached(c.opts.SplitWait, written)
+	})
+}
+
+// poll calls cond until it reports true. The poll interval starts with a few
+// scheduler yields, then grows from 50 microseconds to 1 ms. Close, the write
+// deadline (including changes to it) and timeout bound the wait; timeoutErr is
+// returned when timeout expires. A cond error is wrapped with what.
+func (c *Conn) poll(timeout time.Duration, timeoutErr error, what string, cond func() (bool, error)) error {
 	end := time.Now().Add(timeout)
 	interval := time.Duration(0)
 	for polls := 0; ; polls++ {
@@ -278,21 +309,21 @@ func (c *Conn) waitSplit(obs ackObserver, written int64) error {
 		if err != nil {
 			return err
 		}
-		ok, err := obs.reached(c.opts.SplitWait, written)
+		ok, err := cond()
 		if err != nil {
 			select {
 			case <-c.closed:
 				return net.ErrClosed
 			default:
 			}
-			return fmt.Errorf("desync: split wait: %w", err)
+			return fmt.Errorf("desync: %s: %w", what, err)
 		}
 		if ok {
 			return nil
 		}
 		now := time.Now()
 		if !now.Before(end) {
-			return ErrSplitWaitTimeout
+			return timeoutErr
 		}
 		if polls < splitWaitSpins {
 			runtime.Gosched()

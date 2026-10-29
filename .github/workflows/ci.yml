@@ -79,7 +79,13 @@ jobs:
         run: go test -count=1 -timeout=3m -shuffle=on -coverprofile=coverage.out ./...
       - name: Native capability report
         shell: bash
-        run: go test -count=1 -timeout=2m -run 'Capabilities|ProbeConn|SplitAck|TCPInfo|Getsockopt' -v .
+        run: go test -count=1 -timeout=2m -run 'Capabilities|ProbeConn|SplitAck|TCPInfo|Getsockopt|SocketMethod|OOB|Disorder|LinuxFake|LowHop|UDPFake' -v .
+      # The drop filter that makes the server discard low-hop segments needs
+      # root on the runners; without root the test skips itself.
+      - name: Low-hop drop test (root)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: sudo env "PATH=$PATH" GOTOOLCHAIN="$GOTOOLCHAIN" GOWORK="$GOWORK" GOFLAGS="$GOFLAGS" DESYNC_REQUIRE_LOWHOP=1 go test -count=1 -timeout=2m -run '^TestLinuxLowHopDropRetransmitsOriginal$' -v .
       - name: Coverage summary
         if: always() && hashFiles('coverage.out') != ''
         shell: bash

@@ -34,11 +34,23 @@ type Options struct {
 	// deterministic. Include Key() in a strategy ID so it is never reused for
 	// a different randomization policy or seed.
 	Random *RandomOptions
+	// Disorder sends the first TCP piece with hop limit 1, so it expires at
+	// the first router, then restores the hop limit and sends the rest; TCP
+	// retransmits the first piece with the normal hop limit (ByeDPI
+	// --disorder). It needs Split or Random.Split positions. The hop limit is
+	// restored once the kernel reports the piece as transmitted (bounded by
+	// SplitWaitTimeout); see PlatformCapabilities().Disorder.
+	Disorder bool
+	// OOB sends one urgent (MSG_OOB) byte right after the first TCP piece
+	// (ByeDPI --oob; with Disorder, --disoob). It needs Split or Random.Split
+	// positions.
+	OOB *OOBOptions
 }
 
 // Enabled reports whether the options change anything.
 func (o Options) Enabled() bool {
-	return o.Fake != nil || len(o.TLSRec) > 0 || len(o.Split) > 0 || o.Random.enabled()
+	return o.Fake != nil || len(o.TLSRec) > 0 || len(o.Split) > 0 || o.Random.enabled() ||
+		o.Disorder || o.OOB != nil
 }
 
 // splits reports whether the hello can be sent in more than one TCP write.
@@ -81,8 +93,12 @@ func WrapConn(c net.Conn, opts Options) net.Conn {
 		fake.Payload = append([]byte(nil), fake.Payload...)
 		opts.Fake = &fake
 	}
+	if opts.OOB != nil {
+		oob := *opts.OOB
+		opts.OOB = &oob
+	}
 	w := &Conn{Conn: c, opts: opts, closed: make(chan struct{}), err: opts.Validate()}
-	if opts.splits() && (opts.SplitDelay > 0 || opts.SplitWait != SplitWaitNone) {
+	if opts.Fake != nil || opts.splits() && (opts.SplitDelay > 0 || opts.SplitWait != SplitWaitNone || opts.Disorder) {
 		w.deadlineChanged = make(chan struct{})
 	}
 	return w
@@ -300,19 +316,25 @@ func (c *Conn) sendHello(rec []byte, frame helloFrame) (int, error) {
 	}
 	tcpCuts := mapCuts(splitCuts, recCuts)
 	var ack ackObserver
+	var first *firstPiece
 	if len(tcpCuts) > 0 {
 		var err error
 		if ack, err = c.splitObserver(); err != nil {
 			return 0, err
 		}
+		if first, err = c.prepareFirstPiece(ack); err != nil {
+			return 0, err
+		}
 	}
-	written := 0
+	// written counts bytes of out; extra counts urgent bytes, which are on
+	// the socket but not part of the stream the server reads.
+	written, extra := 0, 0
 	for i, end := range append(tcpCuts, len(out)) {
 		if end <= start || end > len(out) {
 			continue
 		}
 		if i > 0 && ack != nil {
-			if err := c.waitSplit(ack, int64(written)); err != nil {
+			if err := c.waitSplit(ack, int64(written+extra)); err != nil {
 				return originalWriteCount(written, recCuts), err
 			}
 		}
@@ -321,8 +343,15 @@ func (c *Conn) sendHello(rec []byte, frame helloFrame) (int, error) {
 				return originalWriteCount(written, recCuts), err
 			}
 		}
-		n, err := writeAllCount(c.Conn, out[start:end])
+		var n, urgent int
+		var err error
+		if i == 0 && first != nil {
+			n, urgent, err = first.send(c, out[start:end])
+		} else {
+			n, err = writeAllCount(c.Conn, out[start:end])
+		}
 		written += n
+		extra += urgent
 		if err != nil {
 			return originalWriteCount(written, recCuts), err
 		}

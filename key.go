@@ -78,6 +78,13 @@ func (o Options) Key() string {
 		b.WriteString(",timeout:")
 		b.WriteString(strconv.FormatInt(int64(o.SplitWaitTimeout), 10))
 	}
+	if o.Disorder {
+		b.WriteString(";disorder=1")
+	}
+	if o.OOB != nil {
+		b.WriteString(";oob=")
+		b.WriteString(strconv.Itoa(int(o.OOB.urgentByte())))
+	}
 	return b.String()
 }
 

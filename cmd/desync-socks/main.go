@@ -6,6 +6,9 @@
 //	desync-socks -listen 127.0.0.1:10802 -tlsrec 1+s
 //	desync-socks -tlsrec 1+s,3+s -split 1+s
 //	desync-socks -split 1+s -split-wait acked
+//	desync-socks -split 1+s -disorder
+//	desync-socks -split 3+s -oob
+//	desync-socks -tlsrec 1+s -fake -1 -ttl 4
 package main
 
 import (
@@ -30,13 +33,23 @@ func main() {
 	delay := flag.Duration("split-delay", 0, "pause between TCP pieces")
 	wait := flag.String("split-wait", "none", "before each further TCP piece, wait until the previous bytes are sent or acked: none, sent, acked")
 	waitTimeout := flag.Duration("split-wait-timeout", 0, "bound for each split wait (0: library default)")
-	fake := flag.Int("fake", 0, "Windows TCP fake prefix: 0 disables, -1 means all but the last byte")
+	fake := flag.Int("fake", 0, "TCP fake prefix (Windows, Linux): 0 disables, -1 means all but the last byte")
 	ttl := flag.Int("ttl", 4, "TTL for a fake initial transmission")
+	disorder := flag.Bool("disorder", false, "send the first TCP piece with hop limit 1 (needs -split)")
+	oob := flag.Bool("oob", false, "send one out-of-band byte after the first TCP piece (needs -split; with -disorder: disoob)")
+	oobByte := flag.String("oob-byte", "a", "the out-of-band byte: one character or a 0x-prefixed hex value (0x00 selects the default a)")
 	fakeTimeout := flag.Duration("fake-timeout", 3*time.Second, "maximum duration of a native fake operation")
 	verbose := flag.Bool("v", false, "log every connection")
 	flag.Parse()
 
-	opts := desync.Options{SplitDelay: *delay, SplitWaitTimeout: *waitTimeout}
+	opts := desync.Options{SplitDelay: *delay, SplitWaitTimeout: *waitTimeout, Disorder: *disorder}
+	if *oob {
+		b, err := parseByte(*oobByte)
+		if err != nil {
+			log.Fatal(err)
+		}
+		opts.OOB = &desync.OOBOptions{Byte: b}
+	}
 	if *fake != 0 {
 		opts.Fake = &desync.FakeOptions{TTL: *ttl, Prefix: *fake, Timeout: *fakeTimeout}
 	}
@@ -58,7 +71,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("desync-socks on %s (tlsrec=%v split=%v delay=%v wait=%v fake=%d ttl=%d)", ln.Addr(), opts.TLSRec, opts.Split, *delay, opts.SplitWait, *fake, *ttl)
+	log.Printf("desync-socks on %s (tlsrec=%v split=%v delay=%v wait=%v disorder=%v oob=%v fake=%d ttl=%d)", ln.Addr(), opts.TLSRec, opts.Split, *delay, opts.SplitWait, *disorder, *oob, *fake, *ttl)
 	for {
 		c, err := ln.Accept()
 		if err != nil {
@@ -81,6 +94,21 @@ func parseList(s string) ([]desync.Pos, error) {
 		out = append(out, p)
 	}
 	return out, nil
+}
+
+// parseByte parses one character or a 0x-prefixed hex byte.
+func parseByte(s string) (byte, error) {
+	if strings.HasPrefix(s, "0x") {
+		v, err := strconv.ParseUint(s[2:], 16, 8)
+		if err != nil {
+			return 0, fmt.Errorf("bad byte %q", s)
+		}
+		return byte(v), nil
+	}
+	if len(s) != 1 {
+		return 0, fmt.Errorf("bad byte %q: want one character or 0xNN", s)
+	}
+	return s[0], nil
 }
 
 func handle(c net.Conn, opts desync.Options, verbose bool) {

@@ -29,13 +29,37 @@ go test ./controller -run '^$' -fuzz '^FuzzControllerTarget$' -fuzztime=15s -fuz
 The CI workflow (`.github/workflows/ci.yml`) runs gofmt, `go mod tidy -diff` and
 vet for Linux, Windows and macOS; tests with coverage on Windows, Linux and macOS
 with Go 1.26, each followed by a verbose run of the native capability tests
-(ACK observation, `ProbeConn`, `SIO_TCP_INFO` layout; no root needed); Linux race
+(capabilities, ACK observation, `ProbeConn`, `SIO_TCP_INFO` layout, disorder,
+OOB, the Linux fake and the UDP burst; no root needed); Linux race
 tests; a 30-second smoke run of each fuzz target; Go 1.20.14 minimum-version
 checks on Linux and on Windows (the native fake TCP/UDP backends); and builds for Windows, Linux and macOS
 (amd64/arm64), Linux armv7 and Android arm64. The `CI` job passes only when every
 other job does, so it is the one check to require on `main`. This describes the
 workflow configuration; inspect the actual Actions result for a given revision.
 The module's declared minimum remains Go 1.20 and it uses only the standard library.
+
+## Local verification, 2026-10-29 (cross-platform methods)
+
+- Windows 11 26200: `go test ./...` on Go 1.26.10 and Go 1.20.14, including
+  disorder, OOB and disoob over IPv4/IPv6 with every split combination, the
+  urgent byte read inline with `SO_OOBINLINE`, hop-limit recording per write
+  and restoration after failures, deadlines, timeouts and Close.
+- Linux in Docker (WSL 2 kernel): tests on Go 1.26.9 and 1.20.14, `-race` for
+  all packages. The Linux fake, disorder and disoob were checked against a
+  server-side BPF filter dropping low-hop segments: the server read the
+  original stream after one retransmission, also with a fake of different
+  bytes; with the page rewrite disabled the server read the fake bytes. The
+  UDP burst and the `IP_RECVERR` suppression were checked with a loopback
+  port-unreachable reply. File descriptors and fake slots return to their
+  previous counts.
+- `go vet ./...` for GOOS windows, linux and darwin on Go 1.26.10 and 1.20.14,
+  plus freebsd and linux/386, linux/arm; builds for linux/386, linux/arm,
+  linux/arm64, linux/riscv64, android/arm64, darwin/amd64, darwin/arm64,
+  freebsd/amd64, windows/386, windows/arm64 and js/wasm.
+- Not verified locally: any macOS runtime behaviour (disorder, OOB, the UDP
+  burst, the dual-stack hop-limit restore; CI runs those tests), Android,
+  real networks and DPI effectiveness, and a route whose device lacks
+  scatter-gather.
 
 ## Local verification, 2026-10-29 (platform ACK capabilities)
 
@@ -167,5 +191,8 @@ requires comparable connection p50/p95/p99 and real application outcomes.
   strategy including its policy and seed. Seeded draws are tied to the key version.
 - `Options.SplitWait` observes the socket's send queue; it is not a timing
   heuristic. Options without it keep their previous `Key()`.
+- `Options.Disorder` and `Options.OOB` are appended to `Key()` only when set,
+  so existing keys are unchanged. `Capabilities` gained fields; compare its
+  fields rather than the whole struct (it now holds a map).
 - No new named Mihomo outbound, subscriber reserve implementation or client
   migration was added by these library stages.

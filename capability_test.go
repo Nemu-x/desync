@@ -19,19 +19,32 @@ func TestPlatformCapabilitiesPerOS(t *testing.T) {
 		t.Fatalf("inconsistent capabilities: %+v", c)
 	}
 	var want AckCapability
-	ttl := false
+	var disorder DisorderCapability
+	ttl, oob, fakeTCP, fakeUDP := false, false, false, false
 	switch runtime.GOOS {
 	case "windows":
 		want = AckCapability{Mechanism: "SIO_TCP_INFO", Sent: true, Acked: true}
-		ttl = true
+		disorder = DisorderCapability{Supported: true, Mechanism: "SIO_TCP_INFO", Observed: true}
+		ttl, oob, fakeTCP, fakeUDP = true, true, true, true
 	case "linux", "android":
 		want = AckCapability{Mechanism: "SIOCOUTQ/SIOCOUTQNSD", Sent: true, Acked: true, Reliable: true}
+		disorder = DisorderCapability{Supported: true, Mechanism: "SIOCOUTQNSD", Observed: true, Reliable: true}
+		ttl, oob, fakeTCP, fakeUDP = true, true, true, true
 	case "darwin", "ios":
 		want = AckCapability{Mechanism: "SO_NWRITE", Acked: true, Reliable: true}
+		disorder = DisorderCapability{Supported: true, Mechanism: "SO_NWRITE"}
+		ttl, oob, fakeUDP = true, true, true
 	}
-	if c.Ack != want || c.TTLControl != ttl {
-		t.Fatalf("%s capabilities: %+v, want ack %+v ttl %v", runtime.GOOS, c, want, ttl)
+	if c.Ack != want || c.TTLControl != ttl || c.Disorder != disorder || c.OOB != oob || c.FakeTCP != fakeTCP || c.FakeUDP != fakeUDP {
+		t.Fatalf("%s capabilities: %+v, want ack %+v disorder %+v ttl %v oob %v fake %v/%v", runtime.GOOS, c, want, disorder, ttl, oob, fakeTCP, fakeUDP)
 	}
+	// Every method this OS lacks is explained, and nothing it implements is.
+	for name, missing := range map[string]bool{"fake-tcp": !c.FakeTCP, "fake-udp": !c.FakeUDP, "disorder": !c.Disorder.Supported, "oob": !c.OOB} {
+		if reason, ok := c.Unsupported[name]; ok != missing || ok && reason == "" {
+			t.Fatalf("%s: unsupported reason %q (present %v), want present %v", name, reason, ok, missing)
+		}
+	}
+	t.Logf("%s capabilities: %+v", runtime.GOOS, c)
 	if !c.Ack.Supports(SplitWaitNone) || c.Ack.Supports(SplitWait(9)) {
 		t.Fatal("Supports: wrong result for none/unknown")
 	}
