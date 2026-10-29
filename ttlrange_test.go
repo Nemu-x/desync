@@ -67,6 +67,22 @@ func TestUDPTTLCandidatesAndKey(t *testing.T) {
 	if (UDPOptions{TTL: 4, Payload: []byte{1}}).Key() == (UDPOptions{TTL: 4, Payload: []byte{2}}).Key() {
 		t.Fatal("payload not in the key")
 	}
+	quic := UDPOptions{TTL: 4, Template: UDPTemplateQUICInitial}
+	if got := quic.Key(); got != want+",template:"+UDPTemplateQUICInitial.String() {
+		t.Fatalf("template key %s", got)
+	}
+	keys := map[string]bool{want: true, quic.Key(): true}
+	for _, o := range []UDPOptions{
+		{TTL: 4, Template: UDPTemplateQUICInitial, SNI: "a.example"},
+		{TTL: 4, Template: UDPTemplateQUICInitial, SNI: "b.example"},
+		{TTL: 4, Template: UDPTemplateQUICInitial, QUICOnly: true},
+		{TTL: 4, QUICOnly: true},
+	} {
+		if keys[o.Key()] {
+			t.Fatalf("%+v: key %s not distinct", o, o.Key())
+		}
+		keys[o.Key()] = true
+	}
 	base := UDPOptions{TTL: 9, Repeats: 2, Packets: 1, Payload: []byte("x")}
 	got, err := UDPTTLCandidates(base, 3, 6)
 	if err != nil || len(got) != 4 {
