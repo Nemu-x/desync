@@ -18,6 +18,18 @@ hufrea. The license text is in BYEDPI-LICENSE. Derived from it:
   before the next one), --oob and --disoob (the piece and one urgent byte sent
   with MSG_OOB), desync.c DESYNC_DISORDER, DESYNC_OOB, DESYNC_DISOOB and
   send_oob. Reimplemented in Go; the default urgent byte 'a' is ByeDPI's.
+- fake_hello.go: the decoy ClientHello options --fake-sni (a list with one
+  name drawn per connection; the wildcards '*', '?' and '#' of copy_name),
+  --fake-tls-mod rand and orig (randomize_tls: random, session ID and key
+  share values; the real ClientHello as the decoy base) and --fake-offset,
+  packets.c change_tls_sni, randomize_tls, copy_name and desync.c
+  get_tcp_fake. Reimplemented in Go by decoding and re-encoding the
+  handshake instead of resizing it in place.
+- conn.go: the fake as one of several split parts (the piece between the
+  previous cut and the fake position is sent as fake, the pieces around it
+  normally; Linux waits until earlier bytes were transmitted before lowering
+  the hop limit), desync.c desync() with DESYNC_FAKE among other parts and
+  sock_has_notsent.
 
 zapret (https://github.com/bol-van/zapret), MIT License, Copyright (c)
 2016-2024 bol-van. The license text is in ZAPRET-LICENSE. Derived from it:

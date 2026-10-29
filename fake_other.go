@@ -4,4 +4,6 @@ package desync
 
 const supportsFake = false
 
-func (c *Conn) sendFake(real, payload, tail []byte) error { return ErrFakeUnsupported }
+func (c *Conn) sendFakePiece(real, payload []byte, queued bool, rest func() error) error {
+	return ErrFakeUnsupported
+}

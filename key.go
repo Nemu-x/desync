@@ -57,6 +57,22 @@ func (o Options) Key() string {
 		}
 		// Only when set, so keys of fixed-TTL fakes are unchanged.
 		writeAutoTTL(&b, f.AutoTTL)
+		// Decoy options are appended only when set, so keys of options
+		// without them are unchanged. Validated names contain no ',' or '|'.
+		if len(f.SNI) > 0 {
+			b.WriteString(",sni:")
+			b.WriteString(strings.Join(f.SNI, "|"))
+		}
+		if f.FromOriginal {
+			b.WriteString(",orig:1")
+		}
+		if f.Randomize {
+			b.WriteString(",rand:1")
+		}
+		if f.Offset != 0 {
+			b.WriteString(",offset:")
+			b.WriteString(strconv.Itoa(f.Offset))
+		}
 	}
 	b.WriteString(";random=")
 	if r := o.Random; r == nil {

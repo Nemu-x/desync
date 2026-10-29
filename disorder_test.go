@@ -22,8 +22,7 @@ func TestSocketMethodValidation(t *testing.T) {
 		"disorder without split": {Disorder: true},
 		"oob without split":      {OOB: &OOBOptions{}},
 		"disorder records only":  {TLSRec: split, Disorder: true},
-		"disorder and fake":      {Split: split, Disorder: true, Fake: &FakeOptions{TTL: 4}},
-		"oob and fake":           {Split: split, OOB: &OOBOptions{}, Fake: &FakeOptions{TTL: 4}},
+		"oob and fake, acked":    {Split: split, OOB: &OOBOptions{}, SplitWait: SplitWaitAcked, Fake: &FakeOptions{TTL: 4}},
 		"disorder and acked":     {Split: split, Disorder: true, SplitWait: SplitWaitAcked},
 	} {
 		if err := o.Validate(); err == nil {

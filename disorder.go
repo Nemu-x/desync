@@ -66,9 +66,6 @@ func (o Options) validateSocketMethods() error {
 	if !o.splits() {
 		return fmt.Errorf("desync: disorder and OOB require Split or Random.Split positions")
 	}
-	if o.Fake != nil {
-		return fmt.Errorf("desync: fake cannot be combined with disorder or OOB yet")
-	}
 	if o.Disorder && o.SplitWait == SplitWaitAcked {
 		// The low-hop piece is acknowledged only after its retransmission,
 		// so an acknowledged wait would undo the reordering.

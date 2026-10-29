@@ -191,7 +191,12 @@ func (o *nativeFake) reap() {
 	}
 }
 
-func (c *Conn) sendFake(real, payload, tail []byte) error {
+// sendFakePiece sends real as the fake piece and runs rest, which writes the
+// pieces after it, as soon as the native request is submitted. queued (bytes
+// written before the piece) needs nothing here: Winsock captures the TTL per
+// send request, as ByeDPI's Windows path relies on. A rest error is returned
+// as is, joined with a native error if both occur.
+func (c *Conn) sendFakePiece(real, payload []byte, queued bool, rest func() error) error {
 	start := time.Now()
 	if err := c.fakeAbort(start); err != nil {
 		return err
@@ -279,14 +284,13 @@ acquire:
 	// ByeDPI sends this normal-TTL tail immediately after restoring the file
 	// cache and TTL. Waiting for the prefix first can block until timeout:
 	// the initial low-TTL data may require TCP retransmission and tail ACKs.
+	var restErr error
 	if nativeErr == nil {
-		if tailErr := writeAll(c.Conn, tail); tailErr != nil {
-			nativeErr = fmt.Errorf("write original tail: %w", tailErr)
-		}
+		restErr = rest()
 	}
 	err = raw.Control(func(fd uintptr) {
 		socket := syscall.Handle(fd)
-		for nativeErr == nil {
+		for nativeErr == nil && restErr == nil {
 			n, resultErr := op.result(socket)
 			if !errors.Is(resultErr, wsaIOIncomplete) {
 				if resultErr != nil {
@@ -327,7 +331,7 @@ acquire:
 		}
 	}
 	if nativeErr != nil {
-		return fmt.Errorf("desync: TCP fake: %w", nativeErr)
+		nativeErr = fmt.Errorf("desync: TCP fake: %w", nativeErr)
 	}
-	return nil
+	return errors.Join(restErr, nativeErr)
 }

@@ -404,9 +404,13 @@ func TestRandomValidation(t *testing.T) {
 			t.Fatalf("invalid %d was transmitted: %v", i, err)
 		}
 	}
-	fake := Options{Fake: &FakeOptions{TTL: 4}, Random: &RandomOptions{Split: []RandomCut{{}}}}
-	if err := fake.Validate(); err == nil || !strings.Contains(err.Error(), "split") {
-		t.Fatalf("fake with random split accepted: %v", err)
+	fake := Options{Fake: &FakeOptions{TTL: 4}, Random: &RandomOptions{Split: []RandomCut{{From: Pos{Offset: 1}, To: Pos{Offset: 40}}}}}
+	if err := fake.Validate(); SupportsFake() != (err == nil) {
+		t.Fatalf("fake with random split: %v", err)
+	}
+	fake.SplitWait = SplitWaitAcked
+	if err := fake.Validate(); err == nil {
+		t.Fatal("fake with random split and SplitWaitAcked accepted")
 	}
 }
 
