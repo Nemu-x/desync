@@ -335,3 +335,9 @@ acquire:
 	}
 	return errors.Join(restErr, nativeErr)
 }
+
+// fakeObservesSent is false: the Windows fake does not read the send queue
+// (see fake_linux.go).
+const fakeObservesSent = false
+
+func (c *Conn) prepareFake() error { return nil }

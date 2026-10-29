@@ -15,7 +15,8 @@ import (
 
 func TestPlatformCapabilitiesPerOS(t *testing.T) {
 	c := PlatformCapabilities()
-	if c.OS != runtime.GOOS || c.FakeTCP != SupportsFake() || c.FakeUDP != SupportsUDPFake() {
+	_, conditionalFake := c.Conditional["fake-tcp"]
+	if c.OS != runtime.GOOS || c.FakeTCP != (SupportsFake() && !conditionalFake) || c.FakeUDP != SupportsUDPFake() {
 		t.Fatalf("inconsistent capabilities: %+v", c)
 	}
 	var want AckCapability
@@ -26,10 +27,14 @@ func TestPlatformCapabilitiesPerOS(t *testing.T) {
 		want = AckCapability{Mechanism: "SIO_TCP_INFO", Sent: true, Acked: true}
 		disorder = DisorderCapability{Supported: true, Mechanism: "SIO_TCP_INFO", Observed: true}
 		ttl, oob, fakeTCP, fakeUDP = true, true, true, true
-	case "linux", "android":
+	case "linux":
 		want = AckCapability{Mechanism: "SIOCOUTQ/SIOCOUTQNSD", Sent: true, Acked: true, Reliable: true}
 		disorder = DisorderCapability{Supported: true, Mechanism: "SIOCOUTQNSD", Observed: true, Reliable: true}
 		ttl, oob, fakeTCP, fakeUDP = true, true, true, true
+	case "android":
+		// unsent bytes are observable only per socket (TCP_INFO)
+		want = AckCapability{Mechanism: "SIOCOUTQ", Acked: true, Reliable: true}
+		ttl, oob, fakeUDP = true, true, true
 	case "darwin", "ios":
 		want = AckCapability{Mechanism: "SO_NWRITE", Acked: true, Reliable: true}
 		disorder = DisorderCapability{Supported: true, Mechanism: "SO_NWRITE"}
@@ -42,6 +47,16 @@ func TestPlatformCapabilitiesPerOS(t *testing.T) {
 	for name, missing := range map[string]bool{"fake-tcp": !c.FakeTCP, "fake-udp": !c.FakeUDP, "disorder": !c.Disorder.Supported, "oob": !c.OOB} {
 		if reason, ok := c.Unsupported[name]; ok != missing || ok && reason == "" {
 			t.Fatalf("%s: unsupported reason %q (present %v), want present %v", name, reason, ok, missing)
+		}
+	}
+	// Only Android has methods that depend on the socket; each is also
+	// listed as unsupported with the same reason.
+	if (len(c.Conditional) > 0) != (runtime.GOOS == "android") {
+		t.Fatalf("conditional methods on %s: %v", runtime.GOOS, c.Conditional)
+	}
+	for name, reason := range c.Conditional {
+		if reason == "" || c.Unsupported[name] != reason {
+			t.Fatalf("conditional %s: %q, unsupported %q", name, reason, c.Unsupported[name])
 		}
 	}
 	t.Logf("%s capabilities: %+v", runtime.GOOS, c)
@@ -78,7 +93,7 @@ func TestSplitWaitValidation(t *testing.T) {
 			t.Fatalf("accepted %+v", o)
 		}
 	}
-	caps := PlatformCapabilities().Ack
+	caps := validatedCapabilities().Ack
 	for _, mode := range []SplitWait{SplitWaitSent, SplitWaitAcked} {
 		for _, o := range []Options{
 			{Split: split, SplitWait: mode},
@@ -176,7 +191,8 @@ func (s *stubAck) reached(SplitWait, int64) (bool, error) {
 	return s.after >= 0 && n > s.after, nil
 }
 
-func (s *stubAck) state() (AckState, error) { return unknownAckState(), nil }
+func (s *stubAck) state() (AckState, error)           { return unknownAckState(), nil }
+func (s *stubAck) capability() (AckCapability, error) { return platformAck, nil }
 
 func stubWaitConn(t *testing.T, timeout time.Duration) (*Conn, net.Conn) {
 	t.Helper()
@@ -329,8 +345,19 @@ func TestProbeConnLoopback(t *testing.T) {
 				}
 			}
 			platform := PlatformCapabilities().Ack
-			if got.Ack != platform || (platform.Acked || platform.Sent) != (got.AckErr == nil) {
+			if (platform.Acked || platform.Sent) != (got.AckErr == nil) {
 				t.Fatalf("ack: %+v %v, platform %+v", got.Ack, got.AckErr, platform)
+			}
+			if got.AckErr == nil {
+				if sentPerSocket {
+					// Android: at least what the platform guarantees, Sent
+					// when TCP_INFO reports it
+					if !got.Ack.Acked || !got.Ack.Reliable || got.Ack.Sent == (got.SentErr != nil) {
+						t.Fatalf("ack: %+v %v", got.Ack, got.SentErr)
+					}
+				} else if got.Ack != platform || got.SentErr != nil {
+					t.Fatalf("ack: %+v %v, platform %+v", got.Ack, got.SentErr, platform)
+				}
 			}
 			if got.AckErr == nil {
 				t.Logf("%s %s: TTL %d, state %+v", runtime.GOOS, platform.Mechanism, got.TTL, got.State)
@@ -473,4 +500,15 @@ func TestSplitAckObserverTracksPeerWindow(t *testing.T) {
 	}
 	state, _ = obs.state()
 	t.Logf("drained: %+v", state)
+}
+
+// validatedCapabilities is what Validate accepts: the platform capabilities
+// with the Conditional methods (Android) counted as available, because only
+// the socket can rule them out.
+func validatedCapabilities() Capabilities {
+	c := PlatformCapabilities()
+	if len(c.Conditional) > 0 {
+		c.Ack, c.FakeTCP, c.Disorder = platformAck, supportsFake, platformDisorder
+	}
+	return c
 }

@@ -32,7 +32,7 @@ func TestSocketMethodValidation(t *testing.T) {
 			t.Errorf("%s: not enabled, so the error would never surface", name)
 		}
 	}
-	caps := PlatformCapabilities()
+	caps := validatedCapabilities()
 	for _, o := range []Options{
 		{Split: split, Disorder: true},
 		{Random: &RandomOptions{Split: []RandomCut{{From: Pos{Offset: 1}, To: Pos{Offset: 40}}}}, Disorder: true},

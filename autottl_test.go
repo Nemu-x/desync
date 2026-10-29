@@ -89,7 +89,7 @@ func TestFakeAutoTTLValidation(t *testing.T) {
 	if err := (Options{Fake: &FakeOptions{}}).Validate(); err == nil || err.Error() != "desync: fake TTL must be between 1 and 255" {
 		t.Fatalf("TTL 0 without AutoTTL: %v", err)
 	}
-	caps := PlatformCapabilities()
+	caps := validatedCapabilities()
 	auto := (Options{Fake: &FakeOptions{AutoTTL: &AutoTTL{}}}).Validate()
 	fallback := (Options{Fake: &FakeOptions{TTL: 6, AutoTTL: &AutoTTL{}}}).Validate()
 	switch {

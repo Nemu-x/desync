@@ -122,3 +122,5 @@ func readSocketTTL(fd uintptr, ipv6 bool) (int, error) {
 	}
 	return getsockoptInt(syscall.Handle(fd), syscall.IPPROTO_IP, syscall.IP_TTL)
 }
+
+func (o *windowsAck) capability() (AckCapability, error) { return platformAck, nil }
