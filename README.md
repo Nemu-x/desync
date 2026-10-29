@@ -28,8 +28,11 @@ A filter on the path and the destination server can read the same bytes differen
 | Split wait (`SplitWait`) | Before each further piece, waits until the kernel reports the previous bytes as sent or acknowledged | sent, acked¹ | sent, acked | acked |
 | Disorder (`Disorder`) | The first TCP piece goes out with hop limit 1 and expires; TCP retransmits it after the later pieces | ✓¹ | ✓ | ✓² |
 | Out-of-band byte (`OOB`) | One urgent byte follows the first TCP piece; the server's TCP removes it from the stream | ✓ | ✓ | ✓ |
-| Low-TTL fake prefix (`Fake`) | First transmission of a prefix carries other bytes with a short hop limit; a retransmission carries the original | ✓ | ✓ | —³ |
+| Low-TTL fake piece (`Fake`) | First transmission of a prefix, or of one split piece, carries other bytes with a short hop limit; a retransmission carries the original | ✓ | ✓ | —³ |
+| Decoy ClientHello (`Fake.SNI`, `FromOriginal`, `Randomize`) | The fake bytes are a valid ClientHello for another server name, built from the template or the real hello | ✓ | ✓ | —³ |
+| Fake with split pieces (`Fake` + `Split`, `Disorder`, `OOB`) | The piece ending at the fake prefix is the fake; the pieces around it are ordinary, disorder or out-of-band | ✓ | ✓ | —³ |
 | Low-TTL UDP burst (`WrapPacketConn`) | Bounded low-TTL datagrams before the first datagrams to each peer; originals are unchanged | ✓ | ✓ | ✓ |
+| QUIC Initial decoy (`UDPOptions.Template`, `QUICOnly`) | The burst datagrams are QUIC v1 Initials for another server name; optionally only QUIC Initials get a burst | ✓ | ✓ | ✓ |
 
 Linux includes Android. ¹ Inferred from counters, not reliable; see [platform capabilities](#platform-capabilities-and-split-wait). ² The transmission before the hop limit is restored is inferred, not observed; see [disorder](#disorder-and-out-of-band-byte). ³ Not implementable: macOS cannot make a retransmission carry other bytes than the first transmission; see [connection I/O](docs/connection-io.md#macos-tcp-fake).
 
@@ -143,11 +146,11 @@ opts := desync.Options{
 }
 ```
 
-- Both act on the first TCP piece, so they need `Split` or `Random.Split` positions; a ClientHello where no split position resolves is written in one piece, as with `Split` alone. `TLSRec`, `SplitDelay` and `SplitWaitSent` combine with them; `Fake` does not, and `Disorder` rejects `SplitWaitAcked` (the dropped piece is acknowledged only after its retransmission).
+- Both act on the first TCP piece, so they need `Split` or `Random.Split` positions; a ClientHello where no split position resolves is written in one piece, as with `Split` alone. `TLSRec`, `SplitDelay`, `SplitWaitSent` and `Fake` (on a later piece, see below) combine with them; `Disorder` rejects `SplitWaitAcked` (the dropped piece is acknowledged only after its retransmission).
 - `Disorder` sets hop limit 1 for the first piece, so it expires at the first router. The hop limit is restored before the next piece and on every error, and TCP retransmits the piece with the normal limit after the server received the later pieces. On Linux and Windows the limit is restored only after the kernel reports the piece as transmitted (`SIOCOUTQNSD`, `SIO_TCP_INFO`), bounded by `SplitWaitTimeout` (`ErrSplitWaitTimeout`), the write deadline and `Close`. macOS cannot observe unsent bytes: the piece is written once `SO_NWRITE` reports an empty send buffer, so the kernel builds the segment inside the send call, and `Capabilities.Disorder.Observed` is false.
 - `OOB` sends the first piece followed by one byte (`Byte`, default `'a'`) with `MSG_OOB`. The server's TCP takes that byte out of the stream as urgent data, so the application reads the original bytes; an inspecting device that ignores the urgent pointer sees one extra byte. A server using `SO_OOBINLINE`, or a middlebox that clears the URG flag, would put the byte into the stream and break the handshake.
 
-### Low-TTL fake prefix (Windows, Linux)
+### Low-TTL fake piece (Windows, Linux)
 
 ```go
 opts := desync.Options{
@@ -158,10 +161,41 @@ opts := desync.Options{
 
 - `TTL` must expire after the filter and before the server. It depends on the route; 4 is an example, not a default. `AutoTTL` derives it per connection where that can be observed, `FakeTTLCandidates` covers the rest (see [automatic TTL](#automatic-ttl)).
 - `Prefix` is measured after record fragmentation. Negative values count from the end; `-1` leaves the last byte for a normal write.
-- `Payload` replaces the bytes of the first transmission; by default an embedded TLS template is used, padded or truncated to the prefix.
+- `Payload` replaces the bytes of the first transmission; by default an embedded TLS template is used, padded or truncated to the fake piece. `Offset` starts the decoy at a later byte (ByeDPI `--fake-offset`).
 - `Timeout` (default 3 s) bounds the native waits. Write deadlines on the wrapper bound normal writes; `Close` interrupts both.
 
-Windows sends the prefix with `TransmitFile` from a delete-on-close temporary file, then puts the original bytes in the file cache for the retransmission and restores the socket's hop limits; native resources are kept until the operation completes or is cancelled. Linux and Android `vmsplice` a shared page holding the fake bytes into a pipe and `splice` it to the socket, so the send queue references the page instead of a copy; once `SIOCOUTQNSD` reports the prefix transmitted, the page is overwritten with the original bytes, then the hop limit is restored. This needs a route whose device supports scatter-gather (loopback, Ethernet, Wi-Fi, tun and WireGuard do); otherwise the kernel copies the spliced bytes and the server receives the fake, which fails the handshake. An error after a transformed send is terminal for the connection. Fake can be combined with `TLSRec`, not with `Split`, `Disorder` or `OOB`. macOS reports it unsupported (`Capabilities.Unsupported["fake-tcp"]`).
+Windows sends the prefix with `TransmitFile` from a delete-on-close temporary file, then puts the original bytes in the file cache for the retransmission and restores the socket's hop limits; native resources are kept until the operation completes or is cancelled. Linux and Android `vmsplice` a shared page holding the fake bytes into a pipe and `splice` it to the socket, so the send queue references the page instead of a copy; once `SIOCOUTQNSD` reports the prefix transmitted, the page is overwritten with the original bytes, then the hop limit is restored. This needs a route whose device supports scatter-gather (loopback, Ethernet, Wi-Fi, tun and WireGuard do); otherwise the kernel copies the spliced bytes and the server receives the fake, which fails the handshake. An error after a transformed send is terminal for the connection. macOS reports it unsupported (`Capabilities.Unsupported["fake-tcp"]`).
+
+Decoy ClientHello (ByeDPI `--fake-sni`, `--fake-tls-mod`):
+
+```go
+opts := desync.Options{
+    Fake: &desync.FakeOptions{
+        TTL:       4,
+        SNI:       []string{"www.example.com", "cdn-##.example.net"}, // one per connection; * ? # are random
+        Randomize: true, // fresh random, session ID and key shares per connection
+        // FromOriginal: true, // build the decoy from the real ClientHello instead of the template
+    },
+}
+```
+
+- With `SNI`, `Randomize` or `FromOriginal` the decoy is decoded and re-encoded as a valid ClientHello with every length recomputed, then padded or truncated to the fake piece. The template's padding extension absorbs a longer or shorter name, so it keeps its 517 bytes; a decoy built from the real hello changes length with the name.
+- Names must be DNS host names (no IP literals, at most 64 names); `*` becomes a random letter or digit, `?` a letter, `#` a digit. A custom `Payload` must then be a ClientHello. `FromOriginal` needs `SNI` or `Randomize` and excludes `Payload`.
+
+Fake with split pieces (ByeDPI `--split`/`--disorder`/`--oob` followed by `--fake`):
+
+```go
+opts := desync.Options{
+    Split:    []desync.Pos{{Offset: 1, FromSNI: true}},
+    Disorder: true,                                   // optional: the first piece goes out with hop limit 1
+    Fake:     &desync.FakeOptions{TTL: 4, Prefix: -1}, // the piece from 1+s to the last byte is the fake
+}
+```
+
+- The fake prefix end is one more cut. The fake piece is the piece that ends there and starts at the previous split cut (or at 0); every other piece is an ordinary write, and `Disorder`/`OOB` still act on the first piece. If for a ClientHello the fake piece would be the first piece while `Disorder` or `OOB` is set, the write fails with `ErrFakeFirstPiece` before any byte is sent.
+- `SplitDelay` and `SplitWaitSent` apply between all pieces; `SplitWaitAcked` is rejected (the fake piece is acknowledged only after its retransmission).
+- Linux lowers the hop limit for the fake piece only once `SIOCOUTQNSD` reports the earlier pieces transmitted, so none of them goes out with it (ByeDPI waits the same way). Windows, like ByeDPI, does not wait: the TTL applies to the `TransmitFile` request. The pieces after the fake are written as soon as the native request is submitted.
+- After an error at or after the fake piece, `Write` counts only the pieces before it.
 
 ### Automatic TTL
 
@@ -212,6 +246,8 @@ _, err = packets.WriteTo(datagram, peer)
 
 - Needs an **unconnected** UDP socket that exposes `SyscallConn`. The wrapper owns all writes to it.
 - `Repeats` (1–16, default 6) low-TTL datagrams go before each of the first `Packets` (1–8, default 3) datagrams to a peer. The default payload is 64 zero bytes.
+- `Template: desync.UDPTemplateQUICInitial` generates a QUIC v1 client Initial per burst instead: long header, version 1, random 8-byte DCID and SCID, a CRYPTO frame with a ClientHello for `SNI` (default `www.wikipedia.org`, ALPN `h3`, QUIC transport parameters), PADDING to 1200 bytes, protected with the Initial keys of RFC 9001, so a device that decrypts Initials reads the decoy name. `desync.QUICInitialPayload(sni)` returns one such packet for a fixed `Payload`.
+- `QUICOnly: true` gives a burst only to datagrams that look like a QUIC client Initial (long header, version 1, a draft or 2, Initial type, at least 1200 bytes); other datagrams pass untouched and do not count towards `Packets`.
 - Originals keep their content, order and source port. The hop limit is restored before every original; if it cannot be restored, the socket is closed.
 - Up to 64 peers per socket are tracked, with a 2-minute idle expiry; further peers pass through unchanged.
 - TTL-expired ICMP replies do not surface as receive errors. Windows suppresses them on the socket (`SIO_UDP_NETRESET`); Linux reports them on an unconnected socket only with `IP_RECVERR`/`IPV6_RECVERR`, which the wrapper turns off if they were enabled; macOS never delivers them to an unconnected socket.
@@ -231,6 +267,8 @@ go run ./cmd/desync-socks -listen 127.0.0.1:10802 -split 1+s -split-wait acked
 go run ./cmd/desync-socks -listen 127.0.0.1:10802 -split 1+s -disorder
 go run ./cmd/desync-socks -listen 127.0.0.1:10802 -split 3+s -oob -oob-byte a
 go run ./cmd/desync-socks -listen 127.0.0.1:10802 -tlsrec 1+s -fake -1 -ttl 4   # Windows, Linux
+go run ./cmd/desync-socks -listen 127.0.0.1:10802 -fake -1 -ttl 4 -fake-sni www.example.com -fake-tls-mod rand
+go run ./cmd/desync-socks -listen 127.0.0.1:10802 -split 1+s -disorder -fake -1 -ttl 4
 ```
 
 Point the application under test at the SOCKS endpoint. It does not change system proxy settings, has no authentication and no UDP.
@@ -251,4 +289,4 @@ Fuzz targets, benchmarks and what has been verified are listed in [validation](d
 
 ## License
 
-MIT, see [LICENSE](LICENSE). The default fake TLS template and the fake, disorder and out-of-band mechanisms come from ByeDPI (MIT), the automatic TTL estimate from zapret (MIT); what was taken is listed in [third_party/NOTICE](third_party/NOTICE).
+MIT, see [LICENSE](LICENSE). The default fake TLS template, the fake, decoy, disorder and out-of-band mechanisms come from ByeDPI (MIT), the automatic TTL estimate from zapret (MIT); what was taken is listed in [third_party/NOTICE](third_party/NOTICE).

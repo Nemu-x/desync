@@ -36,6 +36,7 @@ application probe and real application tests; a successful TCP dial is insuffici
 | Bounded randomization | Opt-in `Options.Random` record/write cut ranges with count/minimum-piece bounds, optional reproducible seed (per-connection crypto/rand seed otherwise) and `Options.Key()` strategy identity; deterministic options unchanged |
 | Cross-platform methods | `Options.Disorder` and `Options.OOB` (ByeDPI disorder, oob, disoob) on Windows, Linux/Android and macOS; TCP fake on Linux/Android via vmsplice/splice; UDP low-TTL burst on Linux/Android and macOS; macOS TCP fake reported unsupported with the reason; `Capabilities.Disorder`, `OOB` and `Unsupported` |
 | Automatic TTL | `FakeOptions.AutoTTL` (zapret-style delta/min/max) from the SYN-ACK hop limit on Linux/Android IPv6 (`ControlAutoTTL`, `ObserveHops`, `EstimateHops`), with an optional fixed fallback TTL; Linux IPv4, Windows and macOS reported unsupported with the reason; `FakeTTLCandidates`/`UDPTTLCandidates` and `UDPOptions.Key()` for range discovery elsewhere |
+| Fake improvements | Decoy ClientHello with another server name (`Fake.SNI` list with wildcards, `FromOriginal`, `Randomize`, `Offset`; ByeDPI `--fake-sni`, `--fake-tls-mod`, `--fake-offset`); the fake as one piece among `Split`/`Random.Split` pieces with `Disorder`, `OOB`, `SplitDelay` and `SplitWaitSent` on Windows and Linux/Android; QUIC v1 Initial decoy template for the UDP burst (`UDPOptions.Template`, `SNI`, `QUICOnly`, `QUICInitialPayload`) |
 | Examples and tests | Owned HTTPS application probe, fragmented/malformed TLS, concurrency, deadlines, IPv4/IPv6 and native Windows regressions |
 
 The controller is available as an API. It is **not yet connected to SlothClash or
@@ -138,8 +139,23 @@ with a BPF filter that drops the low-hop segments. The UDP burst runs on
 Linux/Android and macOS with ICMP errors kept off the owned socket. The macOS
 TCP fake is not implementable (sendfile copies into the socket buffer) and is
 reported in `Capabilities.Unsupported`. Not yet done: macOS runtime evidence
-beyond CI, real-network effectiveness, and combining Fake with Split,
-Disorder or OOB.
+beyond CI and real-network effectiveness.
+
+### Fake improvements
+
+Status: implemented in the library. `FakeOptions.SNI` (one name per
+connection, ByeDPI wildcards), `FromOriginal` and `Randomize` re-encode the
+decoy as a valid ClientHello with recomputed lengths; `Offset` shifts it.
+With split positions the fake prefix end is one more cut and the piece ending
+there is the fake (ByeDPI `-s`/`-d`/`-o` parts followed by `-f`); Disorder and
+OOB keep the first piece, a fake first piece with them fails with
+`ErrFakeFirstPiece` before sending, and `SplitWaitAcked` is rejected. Linux
+lowers the hop limit only after `SIOCOUTQNSD` reports the earlier pieces sent.
+Verified on Linux loopback with the low-hop drop filter (IPv4 and IPv6) and on
+Windows loopback with byte-identical streams. The UDP burst can send a QUIC v1
+Initial decoy (keys per RFC 9001, test vectors from appendix A.1) and can be
+limited to datagrams that look like QUIC Initials. Not yet done: real-network
+effectiveness of the decoy names and the QUIC template; macOS has no TCP fake.
 
 Automatic TTL: implemented where an unprivileged TCP socket can see the
 server's TTL, which is Linux/Android over IPv6 only (`IPV6_RECVHOPLIMIT`
