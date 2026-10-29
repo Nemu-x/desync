@@ -79,7 +79,7 @@ jobs:
         run: go test -count=1 -timeout=3m -shuffle=on -coverprofile=coverage.out ./...
       - name: Native capability report
         shell: bash
-        run: go test -count=1 -timeout=2m -run 'Capabilities|ProbeConn|SplitAck|TCPInfo|Getsockopt' -v .
+        run: go test -count=1 -timeout=2m -run 'Capabilities|ProbeConn|SplitAck|TCPInfo|Getsockopt|SocketMethod|OOB|Disorder|LinuxFake|LowHop|UDPFake' -v .
       - name: Coverage summary
         if: always() && hashFiles('coverage.out') != ''
         shell: bash

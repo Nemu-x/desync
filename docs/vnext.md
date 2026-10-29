@@ -34,6 +34,7 @@ application probe and real application tests; a successful TCP dial is insuffici
 | Controller lifecycle | Independent waiter cancellation, late-result rejection, generation invalidation, close/shutdown, bounded diagnostics and caller-owned versioned snapshots |
 | Platform ACK capabilities | `PlatformCapabilities`/`ProbeConn`; opt-in `Options.SplitWait` (sent/acked) read from the socket's send queue, bounded by Close, deadlines and a timeout; explicit errors where unsupported; Windows reported as counter-based, not reliable |
 | Bounded randomization | Opt-in `Options.Random` record/write cut ranges with count/minimum-piece bounds, optional reproducible seed (per-connection crypto/rand seed otherwise) and `Options.Key()` strategy identity; deterministic options unchanged |
+| Cross-platform methods | `Options.Disorder` and `Options.OOB` (ByeDPI disorder, oob, disoob) on Windows, Linux/Android and macOS; TCP fake on Linux/Android via vmsplice/splice; UDP low-TTL burst on Linux/Android and macOS; macOS TCP fake reported unsupported with the reason; `Capabilities.Disorder`, `OOB` and `Unsupported` |
 | Examples and tests | Owned HTTPS application probe, fragmented/malformed TLS, concurrency, deadlines, IPv4/IPv6 and native Windows regressions |
 
 The controller is available as an API. It is **not yet connected to SlothClash or
@@ -79,8 +80,8 @@ not reliable because `BytesOut` was observed to exceed the bytes written. Waits
 poll (yields, then 50 µs to 1 ms) and honor Close, deadline changes and a
 per-wait timeout; no delay substitutes for an unsupported mode. Loopback
 latency is recorded in [validation](validation.md#split-wait-latency-2026-10-29).
-Not yet done: macOS runtime evidence beyond CI, real-network measurements, and
-applying the wait to a future disorder method. The same change fixed native
+Not yet done: macOS runtime evidence beyond CI and real-network measurements.
+The disorder method reuses the same observation to restore its hop limit. The same change fixed native
 Windows fake TCP/UDP on Go 1.20 and added a Windows Go 1.20 CI job.
 
 - Determine which Windows, Linux and macOS kernel interfaces can observe useful
@@ -123,6 +124,21 @@ Consumer wiring (Mihomo/SlothClash) is not part of this milestone.
 
 Done means regression/fuzz tests, deterministic reproduction and no unexplained
 first-write or warm-path allocation regression.
+
+### Cross-platform transmission methods
+
+Status: implemented in the library. `Options.Disorder` sends the first TCP
+piece with hop limit 1 and restores it once the kernel reports the piece
+transmitted (Linux `SIOCOUTQNSD`, Windows `SIO_TCP_INFO`; on macOS after an
+empty `SO_NWRITE`, reported as `Observed: false`). `Options.OOB` sends one
+urgent byte after the first piece; together they are disoob. The Linux/Android
+TCP fake ports ByeDPI's vmsplice/splice page rewrite, verified on loopback
+with a BPF filter that drops the low-hop segments. The UDP burst runs on
+Linux/Android and macOS with ICMP errors kept off the owned socket. The macOS
+TCP fake is not implementable (sendfile copies into the socket buffer) and is
+reported in `Capabilities.Unsupported`. Not yet done: macOS runtime evidence
+beyond CI, real-network effectiveness, and combining Fake with Split,
+Disorder or OOB.
 
 ### 3. First-class Mihomo outbound as a maintained patch
 
