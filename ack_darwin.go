@@ -60,8 +60,18 @@ func (o *darwinAck) reached(mode SplitWait, _ int64) (bool, error) {
 }
 
 func readSocketTTL(fd uintptr, ipv6 bool) (int, error) {
-	if ipv6 {
-		return syscall.GetsockoptInt(int(fd), syscall.IPPROTO_IPV6, syscall.IPV6_UNICAST_HOPS)
+	if !ipv6 {
+		return syscall.GetsockoptInt(int(fd), syscall.IPPROTO_IP, syscall.IP_TTL)
 	}
-	return syscall.GetsockoptInt(int(fd), syscall.IPPROTO_IP, syscall.IP_TTL)
+	hops, err := syscall.GetsockoptInt(int(fd), syscall.IPPROTO_IPV6, syscall.IPV6_UNICAST_HOPS)
+	if err != nil || hops >= 0 {
+		return hops, err
+	}
+	// -1: the socket uses the system default (RFC 3493), which BSD kernels
+	// report as is instead of resolving it like Linux does
+	def, err := syscall.SysctlUint32("net.inet6.ip6.hlim")
+	if err != nil {
+		return -1, os.NewSyscallError("sysctl net.inet6.ip6.hlim", err)
+	}
+	return int(def), nil
 }
