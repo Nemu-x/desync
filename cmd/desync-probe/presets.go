@@ -131,6 +131,15 @@ func catalog() []preset {
 		fake(3),
 		fake(5),
 		fake(8),
+		{Name: "fake-ttl5-sni", Description: "low-TTL fake whose decoy ClientHello names www.wikipedia.org, randomized per connection, TTL 5",
+			Opts:  desync.Options{Fake: &desync.FakeOptions{TTL: 5, Prefix: -1, SNI: []string{"www.wikipedia.org"}, Randomize: true}},
+			needs: []feature{featFakeTCP}},
+		{Name: "split-1s-fake-ttl5", Description: "split at 1+s, the piece from there to the last byte sent first as a low-TTL fake, TTL 5",
+			Opts:  desync.Options{Split: posList("1+s"), Fake: &desync.FakeOptions{TTL: 5, Prefix: -1}},
+			needs: []feature{featFakeTCP}},
+		{Name: "disorder-1-fake-ttl5", Description: "split after byte 1 with hop limit 1 on the first piece, the rest sent first as a low-TTL fake, TTL 5",
+			Opts:  desync.Options{Split: posList("1"), Disorder: true, Fake: &desync.FakeOptions{TTL: 5, Prefix: -1}},
+			needs: []feature{featDisorder, featFakeTCP}},
 	}
 }
 

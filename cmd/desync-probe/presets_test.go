@@ -44,15 +44,24 @@ func TestCatalogFilteredByCapabilities(t *testing.T) {
 			t.Errorf("%s: skipped preset without key", s.Name)
 		}
 	}
-	for _, n := range []string{"fake-ttl3", "fake-ttl5", "fake-ttl8"} {
-		if got[n] != "fake-tcp: no splice" {
-			t.Errorf("%s: reason %q", n, got[n])
+	fakes := 0
+	for _, p := range full {
+		for _, f := range p.needs {
+			if f == featFakeTCP {
+				fakes++
+				if got[p.Name] != "fake-tcp: no splice" {
+					t.Errorf("%s: reason %q", p.Name, got[p.Name])
+				}
+			}
 		}
+	}
+	if fakes < 6 {
+		t.Errorf("only %d fake presets", fakes)
 	}
 	if !strings.Contains(got["split-1s-wait-sent"], "sent") || !strings.Contains(got["split-1s-wait-sent"], "darwin") {
 		t.Errorf("wait-sent reason %q", got["split-1s-wait-sent"])
 	}
-	if len(skipped) != 4 {
+	if len(skipped) != fakes+1 {
 		t.Errorf("darwin-like: skipped %v", got)
 	}
 	if u := names(usable); !u["split-1s-wait-acked"] || !u["disoob-1s"] || !u[baselineName] {
