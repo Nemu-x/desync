@@ -51,8 +51,23 @@ func TestFakeValidation(t *testing.T) {
 	if err := (Options{Fake: &FakeOptions{TTL: 4, Timeout: -time.Second}}).Validate(); err == nil {
 		t.Fatal("accepted negative timeout")
 	}
-	if err := (Options{Fake: &FakeOptions{TTL: 4}, Split: []Pos{{Offset: 1}}}).Validate(); err == nil {
-		t.Fatal("accepted unsupported fake + split")
+	for name, o := range map[string]Options{
+		"split":          {Fake: &FakeOptions{TTL: 4}, Split: []Pos{{Offset: 1}}},
+		"split-sent":     {Fake: &FakeOptions{TTL: 4}, Split: []Pos{{Offset: 1}}, SplitWait: SplitWaitSent},
+		"disorder":       {Fake: &FakeOptions{TTL: 4}, Split: []Pos{{Offset: 1}}, Disorder: true},
+		"oob":            {Fake: &FakeOptions{TTL: 4}, Split: []Pos{{Offset: 1}}, OOB: &OOBOptions{}},
+		"disoob-delayed": {Fake: &FakeOptions{TTL: 4}, Split: []Pos{{Offset: 1}}, Disorder: true, OOB: &OOBOptions{}, SplitDelay: time.Millisecond},
+	} {
+		err := o.Validate()
+		if SupportsFake() && err != nil && !errors.Is(err, ErrSplitWaitUnsupported) {
+			t.Errorf("fake + %s: %v", name, err)
+		}
+		if !SupportsFake() && err == nil {
+			t.Errorf("fake + %s accepted without fake support", name)
+		}
+	}
+	if err := (Options{Fake: &FakeOptions{TTL: 4}, Split: []Pos{{Offset: 1}}, SplitWait: SplitWaitAcked}).Validate(); err == nil {
+		t.Fatal("accepted fake + SplitWaitAcked")
 	}
 }
 

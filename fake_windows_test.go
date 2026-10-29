@@ -345,3 +345,44 @@ func TestWindowsFakeQueuedCancellation(t *testing.T) {
 		})
 	}
 }
+
+// Fake combined with Split, Disorder and OOB on the native backend. On
+// loopback the low TTL does not expire, so the decoy is the original piece
+// itself (Payload is the stream, Offset aligns it with the piece).
+func TestWindowsFakeSplitNativeStream(t *testing.T) {
+	hello := captureHello(t, "example.test")
+	const cut = 40
+	for name, opts := range map[string]Options{
+		"split-fake":      {Split: []Pos{{Offset: cut}}, Fake: &FakeOptions{TTL: 64, Offset: cut}},
+		"fake-split":      {Split: []Pos{{Offset: cut}, {Offset: 2 * cut}}, Fake: &FakeOptions{TTL: 64, Prefix: cut}},
+		"split-fake-wait": {Split: []Pos{{Offset: cut}, {Offset: len(hello) - 5}}, SplitWait: SplitWaitSent, SplitDelay: time.Millisecond, Fake: &FakeOptions{TTL: 64, Prefix: 2 * cut, Offset: cut}},
+		"disorder-fake":   {Split: []Pos{{Offset: cut}}, Disorder: true, Fake: &FakeOptions{TTL: 64, Offset: cut}},
+		"oob-fake":        {Split: []Pos{{Offset: cut}}, OOB: &OOBOptions{}, Fake: &FakeOptions{TTL: 64, Offset: cut}},
+		"disoob-fake":     {Split: []Pos{{Offset: cut}}, Disorder: true, OOB: &OOBOptions{}, Fake: &FakeOptions{TTL: 64, Offset: cut}},
+	} {
+		opts := opts
+		t.Run(name, func(t *testing.T) {
+			fake := *opts.Fake
+			fake.Payload = hello
+			opts.Fake = &fake
+			client, server := loopbackPair(t, "tcp4")
+			before := socketTTL(t, client)
+			w := WrapConn(client, opts)
+			_ = w.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			tail := []byte("AFTER")
+			read := readUntil(server, tail)
+			if _, err := w.Write(append(append([]byte(nil), hello...), tail...)); err != nil {
+				t.Fatal(err)
+			}
+			if got := <-read; !bytes.Equal(got, append(append([]byte(nil), hello...), tail...)) {
+				t.Fatalf("server stream changed: %d bytes", len(got))
+			}
+			if after := socketTTL(t, client); after != before {
+				t.Fatalf("TTL changed: %d -> %d", before, after)
+			}
+		})
+	}
+	if len(fakeSlots) != 0 {
+		t.Fatalf("pending resources: %d", len(fakeSlots))
+	}
+}

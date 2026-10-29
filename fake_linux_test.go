@@ -66,7 +66,7 @@ func linuxFakeRoundTrip(t *testing.T, network string, opts Options, drop bool) {
 	}
 	hello := captureHello(t, "example.test")
 	wire := FragmentRecord(hello, resolve(opts.TLSRec, mustParse(t, hello), recordHeaderLen, len(hello)))
-	if opts.Fake != nil && opts.Fake.Payload == nil {
+	if !drop && opts.Fake != nil && opts.Fake.Payload == nil {
 		// Without drops the first transmission reaches the server: a fake
 		// equal to the real bytes keeps that stream verifiable.
 		opts.Fake.Payload = wire
@@ -110,6 +110,23 @@ func TestLinuxFakeNativeStream(t *testing.T) {
 			}
 		}
 	}
+	// Fake with split pieces: the decoy equals the original piece (Payload
+	// is the stream, Offset aligns it), so the undropped stream is checked.
+	const cut = 40
+	for name, opts := range map[string]Options{
+		"split-fake":    {Split: []Pos{{Offset: cut}}, Fake: &FakeOptions{TTL: 64, Offset: cut}},
+		"fake-split":    {Split: []Pos{{Offset: cut}, {Offset: 2 * cut}}, Fake: &FakeOptions{TTL: 64, Prefix: cut}},
+		"disorder-fake": {Split: []Pos{{Offset: cut}}, Disorder: true, Fake: &FakeOptions{TTL: 64, Offset: cut}},
+		"disoob-fake":   {Split: []Pos{{Offset: cut}}, Disorder: true, OOB: &OOBOptions{}, Fake: &FakeOptions{TTL: 64, Offset: cut}},
+		"wait-fake":     {Split: []Pos{{Offset: cut}, {Offset: 3 * cut}}, SplitWait: SplitWaitSent, SplitDelay: time.Millisecond, Fake: &FakeOptions{TTL: 64, Prefix: 2 * cut, Offset: cut}},
+	} {
+		for _, network := range []string{"tcp4", "tcp6"} {
+			opts := opts
+			fake := *opts.Fake
+			opts.Fake = &fake
+			t.Run(name+"/"+network, func(t *testing.T) { linuxFakeRoundTrip(t, network, opts, false) })
+		}
+	}
 	if after := openFDs(t); after > fds {
 		t.Fatalf("file descriptors leaked: %d -> %d", fds, after)
 	}
@@ -130,6 +147,18 @@ func TestLinuxLowHopDropRetransmitsOriginal(t *testing.T) {
 		"fake-template": {Fake: &FakeOptions{TTL: 3, Payload: defaultFakeTLS()}},
 		"disorder":      {TLSRec: rec, Split: split, Disorder: true},
 		"disoob":        {TLSRec: rec, Split: split, Disorder: true, OOB: &OOBOptions{}},
+		// Fake combined with split pieces and the first-piece methods.
+		"split-fake":      {Split: split, Fake: &FakeOptions{TTL: 3, Payload: garbage}},
+		"fake-split":      {TLSRec: rec, Split: split, Fake: &FakeOptions{TTL: 3, Payload: garbage, Prefix: 20}},
+		"split-fake-wait": {TLSRec: rec, Split: []Pos{{Offset: 3}, {Offset: 1, FromSNI: true}, {Offset: 40, FromSNI: true}}, SplitWait: SplitWaitSent, Fake: &FakeOptions{TTL: 3, Payload: garbage, Prefix: -5}},
+		"random-fake":     {Random: &RandomOptions{Split: []RandomCut{{From: Pos{Offset: -8, FromSNI: true}, To: Pos{Offset: 8, FromSNI: true}, Count: 2, MinPiece: 2}}, Seed: 7}, Fake: &FakeOptions{TTL: 3, Payload: garbage}},
+		"disorder-fake":   {Split: split, Disorder: true, Fake: &FakeOptions{TTL: 3, Payload: garbage}},
+		"oob-fake":        {Split: split, OOB: &OOBOptions{}, Fake: &FakeOptions{TTL: 3, Payload: garbage}},
+		"disoob-fake":     {TLSRec: rec, Split: split, Disorder: true, OOB: &OOBOptions{}, Fake: &FakeOptions{TTL: 3, Payload: garbage}},
+		// Decoy ClientHellos with another server name.
+		"fake-sni":       {Fake: &FakeOptions{TTL: 3, SNI: []string{"decoy.example", "*.?#.example"}, Randomize: true}},
+		"fake-orig":      {Fake: &FakeOptions{TTL: 3, FromOriginal: true, SNI: []string{"decoy.example"}}},
+		"split-fake-sni": {Split: split, Fake: &FakeOptions{TTL: 3, SNI: []string{"decoy.example"}, Offset: 7}},
 	} {
 		for _, network := range []string{"tcp4", "tcp6"} {
 			opts := opts

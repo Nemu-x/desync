@@ -4,6 +4,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -98,6 +99,7 @@ func WrapConn(c net.Conn, opts Options) net.Conn {
 			auto := *fake.AutoTTL
 			fake.AutoTTL = &auto
 		}
+		fake.SNI = append([]string(nil), fake.SNI...)
 		opts.Fake = &fake
 	}
 	if opts.OOB != nil {
@@ -303,68 +305,133 @@ func (c *Conn) sendHello(rec []byte, frame helloFrame) (int, error) {
 	if len(recCuts) > 0 {
 		out = fragmentHello(rec, frame, recCuts)
 	}
-	start := 0
+	if !c.opts.Random.enabled() {
+		splitCuts = frame.cuts(c.opts.Split, false)
+	}
+	s := pieceSender{c: c, out: out, ends: mapCuts(splitCuts, recCuts), fakeEnd: -1}
 	if c.opts.Fake != nil {
+		// The fake prefix end is one more cut; the fake piece ends there.
 		prefix, err := fakePrefixLength(len(out), c.opts.Fake.Prefix)
 		if err != nil {
 			return 0, err
 		}
-		// Submit the normal tail before waiting for the native prefix. A
-		// low-TTL prefix can still be pending when this tail reaches the peer.
-		if err := c.sendFake(out[:prefix], fakePayload(c.opts.Fake.Payload, prefix), out[prefix:]); err != nil {
-			// A failed native asynchronous send has no reliable prefix count.
-			// Report zero conservatively and terminate; never replay this stream.
-			return 0, err
-		}
-		return len(rec), nil
+		s.fakeEnd = prefix
 	}
-	if !c.opts.Random.enabled() {
-		splitCuts = frame.cuts(c.opts.Split, false)
-	}
-	tcpCuts := mapCuts(splitCuts, recCuts)
-	var ack ackObserver
-	var first *firstPiece
-	if len(tcpCuts) > 0 {
+	if len(s.ends) > 0 {
 		var err error
-		if ack, err = c.splitObserver(); err != nil {
+		if s.ack, err = c.splitObserver(); err != nil {
 			return 0, err
 		}
-		if first, err = c.prepareFirstPiece(ack); err != nil {
+		if s.first, err = c.prepareFirstPiece(s.ack); err != nil {
 			return 0, err
 		}
 	}
+	if s.fakeEnd >= 0 {
+		firstEnd := s.fakeEnd
+		if len(s.ends) > 0 && s.ends[0] < firstEnd {
+			firstEnd = s.ends[0]
+		}
+		if firstEnd == s.fakeEnd && s.first != nil {
+			return 0, ErrFakeFirstPiece
+		}
+		s.ends = insertCut(s.ends, s.fakeEnd)
+		decoy, err := c.fakeDecoy(rec, frame)
+		if err != nil {
+			return 0, err
+		}
+		s.decoy = decoy
+	}
+	s.ends = append(s.ends, len(out))
+	if err := s.send(0, 0); err != nil {
+		if s.fakeStarted {
+			// A failed native asynchronous send has no reliable count: report
+			// only the pieces before the fake piece and terminate; never
+			// replay this stream.
+			return originalWriteCount(s.beforeFake, recCuts), err
+		}
+		return originalWriteCount(s.written, recCuts), err
+	}
+	return len(rec), nil
+}
+
+// pieceSender writes the TCP pieces of one transformed ClientHello.
+type pieceSender struct {
+	c     *Conn
+	out   []byte
+	ends  []int // piece ends in out, ascending, the last is len(out)
+	ack   ackObserver
+	first *firstPiece
+	// fakeEnd is the end of the fake piece, -1 without Fake; decoy is the
+	// connection's decoy bytes.
+	fakeEnd int
+	decoy   []byte
 	// written counts bytes of out; extra counts urgent bytes, which are on
-	// the socket but not part of the stream the server reads.
-	written, extra := 0, 0
-	for i, end := range append(tcpCuts, len(out)) {
-		if end <= start || end > len(out) {
+	// the socket but not part of the stream the server reads. beforeFake is
+	// written when the fake piece started.
+	written, extra, beforeFake int
+	fakeStarted                bool
+}
+
+// send writes the pieces from index i on, the first of them starting at
+// start. The fake piece hands the pieces after it to the native backend,
+// which writes them as soon as the low-hop transmission allows.
+func (s *pieceSender) send(i, start int) error {
+	c := s.c
+	for ; i < len(s.ends); i++ {
+		end := s.ends[i]
+		if end <= start || end > len(s.out) {
 			continue
 		}
-		if i > 0 && ack != nil {
-			if err := c.waitSplit(ack, int64(written+extra)); err != nil {
-				return originalWriteCount(written, recCuts), err
+		if i > 0 && s.ack != nil {
+			if err := c.waitSplit(s.ack, int64(s.written+s.extra)); err != nil {
+				return err
 			}
 		}
 		if i > 0 && c.opts.SplitDelay > 0 {
 			if err := c.waitWriteDelay(c.opts.SplitDelay); err != nil {
-				return originalWriteCount(written, recCuts), err
+				return err
 			}
+		}
+		piece := s.out[start:end]
+		if end == s.fakeEnd {
+			s.fakeStarted, s.beforeFake = true, s.written
+			next := i + 1
+			payload := fakeBytes(s.decoy, c.opts.Fake.Offset, len(piece))
+			return sendFakePieceFunc(c, piece, payload, start > 0, func() error {
+				s.written += len(piece)
+				return s.send(next, end)
+			})
 		}
 		var n, urgent int
 		var err error
-		if i == 0 && first != nil {
-			n, urgent, err = first.send(c, out[start:end])
+		if i == 0 && s.first != nil {
+			n, urgent, err = s.first.send(c, piece)
 		} else {
-			n, err = writeAllCount(c.Conn, out[start:end])
+			n, err = writeAllCount(c.Conn, piece)
 		}
-		written += n
-		extra += urgent
+		s.written += n
+		s.extra += urgent
 		if err != nil {
-			return originalWriteCount(written, recCuts), err
+			return err
 		}
 		start = end
 	}
-	return len(rec), nil
+	return nil
+}
+
+// sendFakePieceFunc is replaced by tests to observe the fake piece.
+var sendFakePieceFunc = (*Conn).sendFakePiece
+
+// insertCut adds at to the ascending cuts unless it is already there.
+func insertCut(cuts []int, at int) []int {
+	i := sort.SearchInts(cuts, at)
+	if i < len(cuts) && cuts[i] == at {
+		return cuts
+	}
+	cuts = append(cuts, 0)
+	copy(cuts[i+1:], cuts[i:])
+	cuts[i] = at
+	return cuts
 }
 
 func writeAll(w io.Writer, p []byte) error {

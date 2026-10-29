@@ -28,6 +28,18 @@ type UDPOptions struct {
 	Packets int
 	// Payload defaults to 64 zero bytes. Custom payloads may contain 1-1200 bytes.
 	Payload []byte
+
+	// QUIC decoys. Template generates the decoy instead of Payload (which
+	// must then be empty); SNI is the server name in the QUIC Initial
+	// template's ClientHello (default DefaultQUICSNI, wildcards as in
+	// FakeOptions.SNI); QUICOnly limits the burst to datagrams that look like
+	// a QUIC client Initial (long header, version 1, a draft or 2, Initial
+	// type, at least 1200 bytes), so other UDP traffic passes untouched and
+	// does not count towards Packets.
+	Template UDPTemplate
+	SNI      string
+	QUICOnly bool
+
 	// Counters can be shared by sockets belonging to one outbound. Do not copy
 	// or reset a counters value after it has been used.
 	Counters *UDPCounters
@@ -69,6 +81,20 @@ func (o UDPOptions) Validate() error {
 	}
 	if len(o.Payload) > 1200 {
 		return fmt.Errorf("desync: UDP fake payload exceeds 1200 bytes")
+	}
+	if o.Template != UDPTemplateZero && o.Template != UDPTemplateQUICInitial {
+		return fmt.Errorf("desync: unknown UDP template %d", int(o.Template))
+	}
+	if o.Template != UDPTemplateZero && len(o.Payload) > 0 {
+		return fmt.Errorf("desync: UDP Template and Payload are mutually exclusive")
+	}
+	if o.SNI != "" {
+		if o.Template != UDPTemplateQUICInitial {
+			return fmt.Errorf("desync: UDP SNI needs Template UDPTemplateQUICInitial")
+		}
+		if err := validFakeSNI(o.SNI); err != nil {
+			return err
+		}
 	}
 	if !SupportsUDPFake() {
 		return ErrUDPFakeUnsupported
@@ -121,7 +147,11 @@ func WrapPacketConn(pc net.PacketConn, opts UDPOptions) (*PacketConn, error) {
 	if opts.Packets == 0 {
 		opts.Packets = 3
 	}
-	if len(opts.Payload) == 0 {
+	if opts.Template == UDPTemplateQUICInitial {
+		if opts.SNI == "" {
+			opts.SNI = DefaultQUICSNI
+		}
+	} else if len(opts.Payload) == 0 {
 		opts.Payload = make([]byte, 64)
 	} else {
 		opts.Payload = append([]byte(nil), opts.Payload...)
@@ -183,8 +213,17 @@ func (c *PacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 	if c.closed.Load() {
 		return 0, net.ErrClosed
 	}
-	if len(p) > 0 && c.shouldInject(addr) {
-		unsafeTTL, err := sendUDPFake(c.PacketConn, c.raw, c.opts, addr)
+	if len(p) > 0 && (!c.opts.QUICOnly || looksLikeQUICInitial(p)) && c.shouldInject(addr) {
+		opts := c.opts
+		if opts.Template == UDPTemplateQUICInitial {
+			payload, err := quicInitial(opts.SNI)
+			if err != nil {
+				c.opts.Counters.errors.Add(1)
+				return 0, err
+			}
+			opts.Payload = payload
+		}
+		unsafeTTL, err := sendUDPFake(c.PacketConn, c.raw, opts, addr)
 		if err != nil {
 			c.opts.Counters.errors.Add(1)
 			if unsafeTTL {

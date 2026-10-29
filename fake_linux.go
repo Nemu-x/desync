@@ -128,7 +128,13 @@ func (o *spliceFake) step(fd uintptr, sent, inPipe, total int) (moved, piped int
 	return int(n), piped, false, nil
 }
 
-func (c *Conn) sendFake(real, payload, tail []byte) error {
+// sendFakePiece sends real as the fake piece, then runs rest, which writes
+// the pieces after it with the original page in place and the hop limit
+// restored. When queued, bytes were written before the piece: the hop limit
+// is lowered only once SIOCOUTQNSD reports them transmitted, so none of them
+// goes out with it (ByeDPI waits for sock_has_notsent between parts). A rest
+// error is returned as is.
+func (c *Conn) sendFakePiece(real, payload []byte, queued bool, rest func() error) error {
 	start := time.Now()
 	if err := c.fakeAbort(start); err != nil {
 		return err
@@ -145,6 +151,13 @@ func (c *Conn) sendFake(real, payload, tail []byte) error {
 	if err != nil {
 		return err
 	}
+	if queued {
+		if err := c.poll(c.fakeTimeout()-time.Since(start), os.ErrDeadlineExceeded, "TCP fake: wait for earlier pieces", func() (bool, error) {
+			return obs.reached(SplitWaitSent, 0)
+		}); err != nil {
+			return err
+		}
+	}
 	select {
 	case fakeSlots <- struct{}{}:
 	default:
@@ -158,12 +171,9 @@ func (c *Conn) sendFake(real, payload, tail []byte) error {
 	if err := c.spliceFake(raw, obs, op, real, ttl, start); err != nil {
 		return fmt.Errorf("desync: TCP fake: %w", err)
 	}
-	// The original prefix is in place and the hop limit restored: the tail
-	// and every retransmission go out normally.
-	if err := writeAll(c.Conn, tail); err != nil {
-		return fmt.Errorf("desync: TCP fake: write original tail: %w", err)
-	}
-	return nil
+	// The original piece is in place and the hop limit restored: the later
+	// pieces and every retransmission go out normally.
+	return rest()
 }
 
 // spliceFake transmits the fake prefix with the low hop limit. Whatever
@@ -186,10 +196,7 @@ func (c *Conn) spliceFake(raw syscall.RawConn, obs ackObserver, op *spliceFake, 
 			err = errors.Join(err, restoreErr)
 		}
 	}()
-	timeout := c.opts.Fake.Timeout
-	if timeout == 0 {
-		timeout = 3 * time.Second
-	}
+	timeout := c.fakeTimeout()
 	remaining := func() time.Duration { return timeout - time.Since(start) }
 	sent, inPipe := 0, 0
 	err = c.poll(remaining(), os.ErrDeadlineExceeded, "splice", func() (bool, error) {

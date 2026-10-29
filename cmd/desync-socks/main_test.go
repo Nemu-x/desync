@@ -114,3 +114,26 @@ func TestParseList(t *testing.T) {
 		t.Fatal("bad position accepted")
 	}
 }
+
+func TestSplitList(t *testing.T) {
+	got := splitList(" a.example, ,*.b.example,")
+	if len(got) != 2 || got[0] != "a.example" || got[1] != "*.b.example" {
+		t.Fatalf("%q", got)
+	}
+	if splitList("") != nil {
+		t.Fatal("empty list")
+	}
+}
+
+// The flags' fake options validate together with split and disorder where
+// the platform has the fake.
+func TestFakeSplitOptions(t *testing.T) {
+	opts := desync.Options{
+		Split:    []desync.Pos{{Offset: 1}},
+		Disorder: true,
+		Fake:     &desync.FakeOptions{TTL: 4, Prefix: -1, SNI: splitList("www.example.com,*.example.org"), Randomize: true},
+	}
+	if err := opts.Validate(); desync.SupportsFake() && err != nil {
+		t.Fatal(err)
+	}
+}
