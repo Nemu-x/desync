@@ -44,6 +44,9 @@ func (o Options) Validate() error {
 	if err := o.Random.validate(o.ClientHello.limits()); err != nil {
 		return err
 	}
+	if err := o.validateSplitWait(); err != nil {
+		return err
+	}
 	if o.Fake == nil {
 		return nil
 	}

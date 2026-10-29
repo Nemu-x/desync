@@ -5,6 +5,7 @@
 //
 //	desync-socks -listen 127.0.0.1:10802 -tlsrec 1+s
 //	desync-socks -tlsrec 1+s,3+s -split 1+s
+//	desync-socks -split 1+s -split-wait acked
 package main
 
 import (
@@ -27,17 +28,22 @@ func main() {
 	tlsrec := flag.String("tlsrec", "", "split the ClientHello into TLS records at these positions, e.g. 1+s,3+s")
 	split := flag.String("split", "", "send the ClientHello in separate TCP writes at these positions")
 	delay := flag.Duration("split-delay", 0, "pause between TCP pieces")
+	wait := flag.String("split-wait", "none", "before each further TCP piece, wait until the previous bytes are sent or acked: none, sent, acked")
+	waitTimeout := flag.Duration("split-wait-timeout", 0, "bound for each split wait (0: library default)")
 	fake := flag.Int("fake", 0, "Windows TCP fake prefix: 0 disables, -1 means all but the last byte")
 	ttl := flag.Int("ttl", 4, "TTL for a fake initial transmission")
 	fakeTimeout := flag.Duration("fake-timeout", 3*time.Second, "maximum duration of a native fake operation")
 	verbose := flag.Bool("v", false, "log every connection")
 	flag.Parse()
 
-	opts := desync.Options{SplitDelay: *delay}
+	opts := desync.Options{SplitDelay: *delay, SplitWaitTimeout: *waitTimeout}
 	if *fake != 0 {
 		opts.Fake = &desync.FakeOptions{TTL: *ttl, Prefix: *fake, Timeout: *fakeTimeout}
 	}
 	var err error
+	if opts.SplitWait, err = desync.ParseSplitWait(*wait); err != nil {
+		log.Fatal(err)
+	}
 	if opts.TLSRec, err = parseList(*tlsrec); err != nil {
 		log.Fatal(err)
 	}
@@ -52,7 +58,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("desync-socks on %s (tlsrec=%v split=%v delay=%v fake=%d ttl=%d)", ln.Addr(), opts.TLSRec, opts.Split, *delay, *fake, *ttl)
+	log.Printf("desync-socks on %s (tlsrec=%v split=%v delay=%v wait=%v fake=%d ttl=%d)", ln.Addr(), opts.TLSRec, opts.Split, *delay, opts.SplitWait, *fake, *ttl)
 	for {
 		c, err := ln.Accept()
 		if err != nil {

@@ -32,6 +32,7 @@ application probe and real application tests; a successful TCP dial is insuffici
 | Windows UDP | Existing bounded fake bursts, source-socket preservation, option restoration and counters; the earlier UDP branch is included |
 | Optional controller | Destination/network/probe-contract cache, negative cache, singleflight, finite attempts/deadlines, bounded callbacks, LKG/ranking, manual/off modes, optional stale/background checks |
 | Controller lifecycle | Independent waiter cancellation, late-result rejection, generation invalidation, close/shutdown, bounded diagnostics and caller-owned versioned snapshots |
+| Platform ACK capabilities | `PlatformCapabilities`/`ProbeConn`; opt-in `Options.SplitWait` (sent/acked) read from the socket's send queue, bounded by Close, deadlines and a timeout; explicit errors where unsupported; Windows reported as counter-based, not reliable |
 | Bounded randomization | Opt-in `Options.Random` record/write cut ranges with count/minimum-piece bounds, optional reproducible seed (per-connection crypto/rand seed otherwise) and `Options.Key()` strategy identity; deterministic options unchanged |
 | Examples and tests | Owned HTTPS application probe, fragmented/malformed TLS, concurrency, deadlines, IPv4/IPv6 and native Windows regressions |
 
@@ -66,6 +67,21 @@ discovery; do not run duplicate strategy searches in both the UI and the core.
 ## Remaining milestones, in order
 
 ### 1. Honest platform ACK capabilities
+
+Status: implemented in the library (`PlatformCapabilities`, `ProbeConn`,
+`Options.SplitWait`, `SplitWaitTimeout`, explicit `ErrSplitWaitUnsupported`,
+`ErrSplitWaitRequiresTCP` and `ErrSplitWaitTimeout`). Linux/Android read the
+socket's unacknowledged and unsent byte counts (`SIOCOUTQ`, `SIOCOUTQNSD`);
+macOS reads the send-buffer byte count (`SO_NWRITE`, equal to
+`TCP_CONNECTION_INFO.tcpi_snd_sbbytes`) and supports only the acknowledged
+mode; Windows infers progress from `SIO_TCP_INFO` counters and is reported as
+not reliable because `BytesOut` was observed to exceed the bytes written. Waits
+poll (yields, then 50 µs to 1 ms) and honor Close, deadline changes and a
+per-wait timeout; no delay substitutes for an unsupported mode. Loopback
+latency is recorded in [validation](validation.md#split-wait-latency-2026-10-29).
+Not yet done: macOS runtime evidence beyond CI, real-network measurements, and
+applying the wait to a future disorder method. The same change fixed native
+Windows fake TCP/UDP on Go 1.20 and added a Windows Go 1.20 CI job.
 
 - Determine which Windows, Linux and macOS kernel interfaces can observe useful
   acknowledgment progress on the actual socket; distinguish availability from
@@ -160,8 +176,8 @@ features or replace the currently installed application.
 
 ## How to continue development
 
-1. Start from current `main` on a small `feat/*` or `fix/*` branch. The next library
-   task is the ACK capability investigation above; keep client changes separate.
+1. Start from current `main` on a small `feat/*` or `fix/*` branch. Keep client
+   changes separate from library tasks.
 2. Write the capability contract and a failing regression/measurement fixture
    before implementation. Keep transformer and controller dependencies separate.
 3. Run the [validation commands](validation.md), add platform tests for native

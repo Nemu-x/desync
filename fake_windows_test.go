@@ -92,7 +92,7 @@ func socketTTL(t *testing.T, c *net.TCPConn) int {
 	var ttl int
 	var optionErr error
 	if err := raw.Control(func(fd uintptr) {
-		ttl, optionErr = syscall.GetsockoptInt(syscall.Handle(fd), syscall.IPPROTO_IP, syscall.IP_TTL)
+		ttl, optionErr = getsockoptInt(syscall.Handle(fd), syscall.IPPROTO_IP, syscall.IP_TTL)
 	}); err != nil {
 		t.Fatal(err)
 	}

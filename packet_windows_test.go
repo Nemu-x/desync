@@ -30,7 +30,7 @@ func udpSocketTTLFor(c *net.UDPConn, destination net.IP) (int, error) {
 		if destination.To4() == nil {
 			level, option = syscall.IPPROTO_IPV6, syscall.IPV6_UNICAST_HOPS
 		}
-		value, operationErr = syscall.GetsockoptInt(syscall.Handle(fd), level, option)
+		value, operationErr = getsockoptInt(syscall.Handle(fd), level, option)
 	})
 	return value, errors.Join(err, operationErr)
 }
