@@ -16,7 +16,8 @@ var (
 
 // FakeOptions changes a prefix's initial transmission to low-TTL bytes while
 // retaining the original prefix for TCP retransmission. It does not insert
-// bytes into the application's stream. Currently implemented on Windows.
+// bytes into the application's stream. Implemented on Windows and Linux
+// (including Android); see PlatformCapabilities for the macOS reason.
 type FakeOptions struct {
 	TTL int
 	// Prefix is measured after TLS record fragmentation. Negative offsets

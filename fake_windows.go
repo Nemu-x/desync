@@ -19,6 +19,9 @@ import (
 )
 
 const supportsFake = true
+
+// fakeUnsupportedReason is unused on Windows, where the fake is implemented.
+const fakeUnsupportedReason = ""
 const wsaIOIncomplete = syscall.Errno(996)
 
 var fakeSlots = make(chan struct{}, 64)

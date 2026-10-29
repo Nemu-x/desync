@@ -1,0 +1,20 @@
+Third-party material in this module
+===================================
+
+ByeDPI (https://github.com/hufrea/byedpi), MIT License, Copyright (c) 2024
+hufrea. The license text is in BYEDPI-LICENSE. Derived from it:
+
+- fake_payload.go: the default fake TLS ClientHello template (packets.c,
+  v0.17.3), copied byte for byte.
+- fake_windows.go: the TransmitFile mechanism of the Windows fake (send the
+  prefix from a temporary file with a low TTL, rewrite the file with the
+  original bytes for the retransmission), desync.c send_fake for _WIN32.
+- fake_linux.go: the Linux fake mechanism (vmsplice a page holding the fake
+  bytes into a pipe, splice it to the socket with a low TTL, wait until it was
+  sent, overwrite the page with the original bytes, restore the TTL),
+  desync.c send_fake and restore_state for __linux__. Reimplemented in Go;
+  the mapping is MAP_SHARED instead of MAP_PRIVATE.
+- disorder.go: the semantics of --disorder (hop limit 1 for a piece, restored
+  before the next one), --oob and --disoob (the piece and one urgent byte sent
+  with MSG_OOB), desync.c DESYNC_DISORDER, DESYNC_OOB, DESYNC_DISOOB and
+  send_oob. Reimplemented in Go; the default urgent byte 'a' is ByeDPI's.

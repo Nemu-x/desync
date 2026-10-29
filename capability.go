@@ -132,7 +132,7 @@ func PlatformCapabilities() Capabilities {
 		Unsupported: map[string]string{},
 	}
 	if !supportsFake {
-		c.Unsupported["fake-tcp"] = "not implemented on " + runtime.GOOS
+		c.Unsupported["fake-tcp"] = fakeUnsupportedReason
 	}
 	if !supportsUDPFake {
 		c.Unsupported["fake-udp"] = "not implemented on " + runtime.GOOS
