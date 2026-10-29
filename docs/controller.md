@@ -59,6 +59,31 @@ unchanged value would behave differently, so a cached ID never silently changes
 meaning. An unseeded random policy is one strategy: its key identifies the
 distribution, not one connection's cuts.
 
+The [`presets`](../presets) catalog already does this: use its IDs as candidate
+IDs and map a selected ID back with `presets.ByID`, so the controller, the
+application settings and `desync-probe` reports share one ID space. A minimal
+setup:
+
+```go
+usable, _ := presets.Available(desync.PlatformCapabilities())
+usable = presets.Ranked(usable)[1:] // drop the untransformed baseline (rank 0) if not wanted
+ids := presets.IDs(usable)
+cfg := controller.Config{
+    Candidates:    ids, // equal scores keep this order
+    PolicyVersion: "app-probe-v1:" + presets.CatalogVersion(ids),
+}
+// in Prober.Probe and after Select:
+m, ok := presets.ByID(strategyID) // m.TCP.Options goes to desync.WrapConn
+```
+
+Derive `PolicyVersion` from the candidate IDs and the probe contract
+(`CatalogVersion` hashes the IDs in order; joined IDs would exceed the 128-byte
+limit), so a library update that changes an option, and therefore an ID,
+invalidates restored snapshots instead of failing `Restore` on an unknown ID. Equal scores
+keep catalog order, so passing the candidates in `Ranked` order makes cold
+discovery try cheap strategies first. UDP preset IDs (`u...`) select a
+`desync.UDPOptions` the same way; the controller itself stays TCP/UDP agnostic.
+
 ## Defaults and bounds
 
 | Setting | Default | Hard limit |

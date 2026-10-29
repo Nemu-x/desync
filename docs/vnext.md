@@ -37,10 +37,12 @@ application probe and real application tests; a successful TCP dial is insuffici
 | Cross-platform methods | `Options.Disorder` and `Options.OOB` (ByeDPI disorder, oob, disoob) on Windows, Linux/Android and macOS; TCP fake on Linux/Android via vmsplice/splice; UDP low-TTL burst on Linux/Android and macOS; macOS TCP fake reported unsupported with the reason; `Capabilities.Disorder`, `OOB` and `Unsupported` |
 | Automatic TTL | `FakeOptions.AutoTTL` (zapret-style delta/min/max) from the SYN-ACK hop limit on Linux/Android IPv6 (`ControlAutoTTL`, `ObserveHops`, `EstimateHops`), with an optional fixed fallback TTL; Linux IPv4, Windows and macOS reported unsupported with the reason; `FakeTTLCandidates`/`UDPTTLCandidates` and `UDPOptions.Key()` for range discovery elsewhere |
 | Fake improvements | Decoy ClientHello with another server name (`Fake.SNI` list with wildcards, `FromOriginal`, `Randomize`, `Offset`; ByeDPI `--fake-sni`, `--fake-tls-mod`, `--fake-offset`); the fake as one piece among `Split`/`Random.Split` pieces with `Disorder`, `OOB`, `SplitDelay` and `SplitWaitSent` on Windows and Linux/Android; QUIC v1 Initial decoy template for the UDP burst (`UDPOptions.Template`, `SNI`, `QUICOnly`, `QUICInitialPayload`) |
+| Strategy catalog | `presets` package shared by applications and `desync-probe`: TCP presets (record/write splits, random cuts, split waits, disorder, OOB, fakes incl. decoy SNI and fake among split pieces) and UDP bursts (zero payload and QUIC Initial decoys), stable `Key`-derived IDs, capability filtering with reasons, a cost/risk rank, `ByID` and a persistable `ID` type; `UDPOptions.Key` covers the QUIC decoy fields |
 | Examples and tests | Owned HTTPS application probe, fragmented/malformed TLS, concurrency, deadlines, IPv4/IPv6 and native Windows regressions |
 
-The controller is available as an API. It is **not yet connected to SlothClash or
-a new Mihomo outbound**. Existing installed clients keep their current library
+The controller and the strategy catalog are available as APIs. They are **not yet
+connected to SlothClash or a new Mihomo outbound**; client migration should take
+candidate IDs from `presets` rather than keep its own preset list. Existing installed clients keep their current library
 pin, strategy controller and runtime behavior until explicitly migrated.
 
 See [architecture and audit findings](architecture.md),
