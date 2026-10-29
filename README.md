@@ -259,6 +259,8 @@ The optional [`controller`](docs/controller.md) package picks a verified strateg
 
 ## desync-socks
 
+To find a strategy first, see [testing on your network](#testing-on-your-network).
+
 A minimal SOCKS5 CONNECT proxy for trying methods on a real network:
 
 ```sh
@@ -272,6 +274,52 @@ go run ./cmd/desync-socks -listen 127.0.0.1:10802 -split 1+s -disorder -fake -1 
 ```
 
 Point the application under test at the SOCKS endpoint. It does not change system proxy settings, has no authentication and no UDP.
+
+## Testing on your network
+
+`desync-probe` measures which strategies open which sites on the network it runs on. It needs no installation, no administrator rights and no arguments: it tests a built-in list of commonly filtered sites (plus `ya.ru` and `example.com` as controls) with every strategy your system supports, prints a summary and writes `report.json` next to the program. A run takes a few minutes; blocked sites that never answer make it slower, and it stops after 20 minutes at most.
+
+Before you start: run it on the network you want to test (home Wi-Fi, mobile data), and turn off any VPN or proxy app, otherwise you measure the VPN. Download the file for your system from the [latest release](https://github.com/Nemu-x/desync/releases/latest) (or the `desync-binaries` artifact of a CI run).
+
+**Windows** (`desync-probe-windows-amd64.exe`; `-windows-arm64.exe` for ARM laptops): double-click it. If SmartScreen warns, choose *More info → Run anyway*. The window stays open until you press Enter. Or in PowerShell:
+
+```powershell
+cd $HOME\Downloads
+.\desync-probe-windows-amd64.exe
+```
+
+**macOS** (`desync-probe-darwin-arm64` for Apple silicon, `-darwin-amd64` for Intel), in Terminal:
+
+```sh
+cd ~/Downloads
+chmod +x desync-probe-darwin-arm64
+xattr -d com.apple.quarantine desync-probe-darwin-arm64   # the binary is not notarized
+./desync-probe-darwin-arm64
+```
+
+**Linux** (`desync-probe-linux-amd64` or `-linux-arm64`):
+
+```sh
+chmod +x desync-probe-linux-amd64
+./desync-probe-linux-amd64
+```
+
+**Android** in [Termux](https://f-droid.org/packages/com.termux/) (`desync-probe-android-arm64`):
+
+```sh
+cd ~
+curl -LO https://github.com/Nemu-x/desync/releases/latest/download/desync-probe-android-arm64
+chmod +x desync-probe-android-arm64
+./desync-probe-android-arm64
+termux-setup-storage                     # once; allow access when asked
+cp report.json ~/storage/downloads/      # now it is in the phone's Downloads folder
+```
+
+**Send back** `report.json` (the program prints where it wrote it) as a file in a messenger or by email, and say which network it was (provider, home or mobile). The report contains the site names, the server addresses they resolved to, which strategies worked, error classes (`reset`, `timeout`, `eof`, `cert`, ...), timings, the program version, OS and CPU type, and what the library supports on that OS. It does not contain your IP addresses (local or public), MAC address, computer name or user name; DNS answers that are not public addresses are written as `non-public`, and error texts are stripped of addresses.
+
+Useful options (`-h` lists all): `-targets youtube.com,discord.com` or `-list sites.txt` to test other sites, `-presets tlsrec-1s,split-1s` to test fewer strategies (`-list-presets` shows them with their IDs), `-repeat 3` for more runs per pair, `-dns 1.1.1.1` to bypass the system resolver. A custom strategy uses the `desync-socks` flags, e.g. `-tlsrec 3+s -split 1+s -name mine`. Every strategy ID is derived from `Options.Key()`, so the same ID in two reports means the same transformation. The exit code is 0 whenever the measurement ran, however many sites were blocked.
+
+How a run works: every name is resolved once; then each strategy dials the first IPv4 answer, wraps the socket with desync, completes a TLS handshake that verifies the real certificate for that name, and sends `HEAD /` over HTTP/1.1 or HTTP/2. A strategy *works* for a site when every repetition got an HTTP response, is *flaky* when some did, and *fails* when none did. The probe also implements `controller.Prober` (a working strategy yields `Application` proof), so the same measurement can later drive automatic discovery.
 
 ## Effectiveness
 
