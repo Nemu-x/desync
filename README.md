@@ -156,12 +156,42 @@ opts := desync.Options{
 }
 ```
 
-- `TTL` must expire after the filter and before the server. It depends on the route; 4 is an example, not a default.
+- `TTL` must expire after the filter and before the server. It depends on the route; 4 is an example, not a default. `AutoTTL` derives it per connection where that can be observed, `FakeTTLCandidates` covers the rest (see [automatic TTL](#automatic-ttl)).
 - `Prefix` is measured after record fragmentation. Negative values count from the end; `-1` leaves the last byte for a normal write.
 - `Payload` replaces the bytes of the first transmission; by default an embedded TLS template is used, padded or truncated to the prefix.
 - `Timeout` (default 3 s) bounds the native waits. Write deadlines on the wrapper bound normal writes; `Close` interrupts both.
 
 Windows sends the prefix with `TransmitFile` from a delete-on-close temporary file, then puts the original bytes in the file cache for the retransmission and restores the socket's hop limits; native resources are kept until the operation completes or is cancelled. Linux and Android `vmsplice` a shared page holding the fake bytes into a pipe and `splice` it to the socket, so the send queue references the page instead of a copy; once `SIOCOUTQNSD` reports the prefix transmitted, the page is overwritten with the original bytes, then the hop limit is restored. This needs a route whose device supports scatter-gather (loopback, Ethernet, Wi-Fi, tun and WireGuard do); otherwise the kernel copies the spliced bytes and the server receives the fake, which fails the handshake. An error after a transformed send is terminal for the connection. Fake can be combined with `TLSRec`, not with `Split`, `Disorder` or `OOB`. macOS reports it unsupported (`Capabilities.Unsupported["fake-tcp"]`).
+
+### Automatic TTL
+
+```go
+dialer := net.Dialer{Control: desync.ControlAutoTTL} // before connect; no-op where unobservable
+raw, err := dialer.Dial("tcp", "[2001:db8::1]:443")
+if err != nil {
+    return err
+}
+conn := desync.WrapConn(raw, desync.Options{
+    Fake: &desync.FakeOptions{
+        AutoTTL: &desync.AutoTTL{}, // Delta 1, Min 3, Max 20
+        TTL:     4,                 // fallback where the path cannot be observed; 0: fail instead
+    },
+})
+// after the first Write: ttl, auto := conn.(*desync.Conn).FakeTTL()
+```
+
+- The client reads the TTL of the server's SYN-ACK, guesses its initial value (64, 128 or 255; `EstimateHops`) and so the number of routers, and sends the fake with `hops - Delta`, clamped to `Min`..`Max` (zapret's `--dpi-desync-autottl`). A result that does not stay below the hop count is rejected: the fallback `TTL` is used, or the write fails with `ErrAutoTTLUnobserved` before anything is sent.
+- Only **Linux/Android over IPv6** can observe it without privileges (`IPV6_RECVHOPLIMIT`, enabled by `ControlAutoTTL` before connect). Linux IPv4, Windows and macOS keep no received TTL for a TCP socket; `PlatformCapabilities().AutoTTL` and `Unsupported["auto-ttl-ipv4"]`/`["auto-ttl-ipv6"]` say why. There `AutoTTL` without a fallback `TTL` fails `Validate` (Windows) or the write (`ErrAutoTTLUnsupported`, Linux IPv4).
+- `ObserveHops(conn)` returns the observed TTL and hops without changing anything, for diagnostics or to set `UDPOptions.TTL` with `AutoTTL{}.TTL(hops)`. The UDP burst itself has no automatic TTL: it precedes the peer's first reply.
+- Where nothing can be observed, probe a range instead. `FakeTTLCandidates(base, 2, 8)` (and `UDPTTLCandidates`) return one option set per TTL, each with a stable, distinct `Key()`; register them as controller candidates and let discovery keep the one that verifies:
+
+```go
+candidates, err := desync.FakeTTLCandidates(desync.Options{Fake: &desync.FakeOptions{Prefix: -1}}, 2, 8)
+// one strategy ID per candidate, e.g. "fake-ttl-" + strconv.Itoa(c.Fake.TTL);
+// derive the controller's PolicyVersion from the candidates' Key() values
+```
+
+The estimate assumes that the return path is as long as the forward path and that the server uses a standard initial TTL; a CDN or middlebox answering with its own TTL, or an asymmetric route, makes it wrong. See [connection I/O](docs/connection-io.md#automatic-ttl).
 
 ### Low-TTL UDP burst (Windows, Linux, macOS)
 
@@ -221,4 +251,4 @@ Fuzz targets, benchmarks and what has been verified are listed in [validation](d
 
 ## License
 
-MIT, see [LICENSE](LICENSE). The default fake TLS template and the fake, disorder and out-of-band mechanisms come from ByeDPI (MIT); what was taken is listed in [third_party/NOTICE](third_party/NOTICE).
+MIT, see [LICENSE](LICENSE). The default fake TLS template and the fake, disorder and out-of-band mechanisms come from ByeDPI (MIT), the automatic TTL estimate from zapret (MIT); what was taken is listed in [third_party/NOTICE](third_party/NOTICE).
