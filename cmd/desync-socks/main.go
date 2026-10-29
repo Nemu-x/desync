@@ -9,6 +9,9 @@
 //	desync-socks -split 1+s -disorder
 //	desync-socks -split 3+s -oob
 //	desync-socks -tlsrec 1+s -fake -1 -ttl 4
+//	desync-socks -fake -1 -ttl 4 -fake-sni www.example.com,*.example.org -fake-tls-mod rand
+//	desync-socks -split 1+s -fake -1 -ttl 4            (fake piece after the split)
+//	desync-socks -split 1 -disorder -fake -1 -ttl 4    (ByeDPI -d 1 -f -1)
 package main
 
 import (
@@ -33,12 +36,15 @@ func main() {
 	delay := flag.Duration("split-delay", 0, "pause between TCP pieces")
 	wait := flag.String("split-wait", "none", "before each further TCP piece, wait until the previous bytes are sent or acked: none, sent, acked")
 	waitTimeout := flag.Duration("split-wait-timeout", 0, "bound for each split wait (0: library default)")
-	fake := flag.Int("fake", 0, "TCP fake prefix (Windows, Linux): 0 disables, -1 means all but the last byte")
+	fake := flag.Int("fake", 0, "TCP fake (Windows, Linux): end of the fake piece, 0 disables, -1 means all but the last byte; with -split the fake piece is the piece ending here")
 	ttl := flag.Int("ttl", 4, "TTL for a fake initial transmission")
 	disorder := flag.Bool("disorder", false, "send the first TCP piece with hop limit 1 (needs -split)")
 	oob := flag.Bool("oob", false, "send one out-of-band byte after the first TCP piece (needs -split; with -disorder: disoob)")
 	oobByte := flag.String("oob-byte", "a", "the out-of-band byte: one character or a 0x-prefixed hex value (0x00 selects the default a)")
 	fakeTimeout := flag.Duration("fake-timeout", 3*time.Second, "maximum duration of a native fake operation")
+	fakeSNI := flag.String("fake-sni", "", "server names for the decoy ClientHello, comma-separated, one drawn per connection; * ? # are random alphanumeric/letter/digit")
+	fakeMod := flag.String("fake-tls-mod", "", "decoy ClientHello changes, comma-separated: rand (random, session ID, key shares), orig (build the decoy from the real ClientHello)")
+	fakeOffset := flag.Int("fake-offset", 0, "start the decoy transmission at this byte of the decoy")
 	verbose := flag.Bool("v", false, "log every connection")
 	flag.Parse()
 
@@ -51,7 +57,20 @@ func main() {
 		opts.OOB = &desync.OOBOptions{Byte: b}
 	}
 	if *fake != 0 {
-		opts.Fake = &desync.FakeOptions{TTL: *ttl, Prefix: *fake, Timeout: *fakeTimeout}
+		opts.Fake = &desync.FakeOptions{TTL: *ttl, Prefix: *fake, Timeout: *fakeTimeout, Offset: *fakeOffset}
+		opts.Fake.SNI = splitList(*fakeSNI)
+		for _, m := range splitList(*fakeMod) {
+			switch m {
+			case "rand":
+				opts.Fake.Randomize = true
+			case "orig":
+				opts.Fake.FromOriginal = true
+			default:
+				log.Fatalf("unknown -fake-tls-mod %q: want rand or orig", m)
+			}
+		}
+	} else if *fakeSNI != "" || *fakeMod != "" || *fakeOffset != 0 {
+		log.Fatal("-fake-sni, -fake-tls-mod and -fake-offset need -fake")
 	}
 	var err error
 	if opts.SplitWait, err = desync.ParseSplitWait(*wait); err != nil {
@@ -71,7 +90,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("desync-socks on %s (tlsrec=%v split=%v delay=%v wait=%v disorder=%v oob=%v fake=%d ttl=%d)", ln.Addr(), opts.TLSRec, opts.Split, *delay, opts.SplitWait, *disorder, *oob, *fake, *ttl)
+	log.Printf("desync-socks on %s (tlsrec=%v split=%v delay=%v wait=%v disorder=%v oob=%v fake=%d ttl=%d fake-sni=%q fake-tls-mod=%q)", ln.Addr(), opts.TLSRec, opts.Split, *delay, opts.SplitWait, *disorder, *oob, *fake, *ttl, *fakeSNI, *fakeMod)
 	for {
 		c, err := ln.Accept()
 		if err != nil {
@@ -94,6 +113,17 @@ func parseList(s string) ([]desync.Pos, error) {
 		out = append(out, p)
 	}
 	return out, nil
+}
+
+// splitList splits a comma-separated list, dropping empty entries.
+func splitList(s string) []string {
+	var out []string
+	for _, f := range strings.Split(s, ",") {
+		if f = strings.TrimSpace(f); f != "" {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // parseByte parses one character or a 0x-prefixed hex byte.
