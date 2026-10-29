@@ -25,7 +25,7 @@ func loopbackReport(t *testing.T) ([]byte, report) {
 	targets := []target{{Host: goodHost, Port: f.port}, {Host: goodHost, Port: rawServer(t, resetAfterHello)}, {Host: "wrong-name.test", Port: f.port}}
 	p := loopbackProber(f.roots, 3*time.Second)
 	res := run(context.Background(), p, targets, presets, runConfig{Repeat: 2, Concurrency: 4}, nil)
-	_, skipped := buildCatalog(catalog(), desync.Capabilities{OS: "test", Unsupported: map[string]string{"fake-tcp": "not here"}})
+	_, skipped := filterCatalog(desync.Capabilities{OS: "test", Unsupported: map[string]string{"fake-tcp": "not here"}})
 	rep := buildReport(time.Now(), desync.PlatformCapabilities(), settingsInfo{Repeat: 2, Concurrency: 4, TimeoutMS: 3000, Resolver: "system"}, presets, skipped, targets, res)
 	b, err := json.MarshalIndent(rep, "", "  ")
 	if err != nil {

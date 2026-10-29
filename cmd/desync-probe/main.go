@@ -141,9 +141,7 @@ func runMain(args []string, stdout, stderr io.Writer) int {
 	}
 
 	caps := desync.PlatformCapabilities()
-	presets, skipped := buildCatalog(catalog(), caps)
-	presets, invalid := validateCatalog(presets)
-	skipped = append(skipped, invalid...)
+	presets, skipped := availablePresets(caps)
 	if c.set() {
 		cp, err := c.preset()
 		if err != nil {

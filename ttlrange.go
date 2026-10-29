@@ -66,8 +66,9 @@ func UDPTTLCandidates(base UDPOptions, from, to int) ([]UDPOptions, error) {
 }
 
 // Key returns a stable, canonical description of the fields that affect the
-// UDP burst, like Options.Key (Counters is not part of it). The payload is
-// represented by its SHA-256 digest.
+// UDP burst, like Options.Key (Counters is not part of it), including the QUIC
+// decoy Template, SNI and QUICOnly. The payload is represented by its SHA-256
+// digest.
 func (o UDPOptions) Key() string {
 	var b strings.Builder
 	b.WriteString(keyVersion)
@@ -83,6 +84,19 @@ func (o UDPOptions) Key() string {
 	} else {
 		sum := sha256.Sum256(o.Payload)
 		b.WriteString(hex.EncodeToString(sum[:]))
+	}
+	// The QUIC decoy fields are appended only when set, so keys of bursts
+	// without them are unchanged. A validated SNI contains no ','.
+	if o.Template != UDPTemplateZero {
+		b.WriteString(",template:")
+		b.WriteString(o.Template.String())
+	}
+	if o.SNI != "" {
+		b.WriteString(",sni:")
+		b.WriteString(o.SNI)
+	}
+	if o.QUICOnly {
+		b.WriteString(",quic-only:1")
 	}
 	return b.String()
 }

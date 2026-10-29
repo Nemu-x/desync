@@ -20,10 +20,11 @@ var loopback = net.IPv4(127, 0, 0, 1)
 
 func platformPresets(t *testing.T) []preset {
 	t.Helper()
-	usable, _ := buildCatalog(catalog(), desync.PlatformCapabilities())
-	usable, invalid := validateCatalog(usable)
-	if len(invalid) > 0 {
-		t.Fatalf("invalid presets: %+v", invalid)
+	caps := desync.PlatformCapabilities()
+	kept, _ := filterCatalog(caps)
+	usable, skipped := availablePresets(caps)
+	if len(usable) != len(kept) {
+		t.Fatalf("invalid presets: %+v", skipped)
 	}
 	return usable
 }
@@ -33,7 +34,7 @@ func platformPresets(t *testing.T) []preset {
 // then receives the fake bytes and cannot complete the handshake; on Linux
 // the receiver reads the shared page after the wrapper rewrote it with the
 // original bytes, so the handshake completes. Both are expected here.
-func isFake(p preset) bool { return p.Opts.Fake != nil }
+func isFake(p preset) bool { return p.Options.Fake != nil }
 
 func TestProbeEveryPresetOnLoopback(t *testing.T) {
 	for _, h2 := range []bool{false, true} {
@@ -47,7 +48,7 @@ func TestProbeEveryPresetOnLoopback(t *testing.T) {
 					// The server waits for the rest of a ClientHello it cannot parse.
 					p.timeout = time.Second
 				}
-				r := p.attempt(context.Background(), goodHost, loopback, f.port, ps.Opts)
+				r := p.attempt(context.Background(), goodHost, loopback, f.port, ps.Options)
 				if isFake(ps) {
 					if r.Class == classLocal || (!r.ok() && r.Stage != stageTLS) {
 						t.Errorf("%s: loopback fake gave stage=%s class=%s err=%v", ps.Name, r.Stage, r.Class, r.Err)
@@ -87,10 +88,10 @@ func TestProbeErrorClasses(t *testing.T) {
 		{"no HTTP answer", goodHost, tlsSilentServer(t, f), 500 * time.Millisecond, stageHTTP, classTimeout},
 	}
 	for _, c := range cases {
-		for _, ps := range []preset{{Name: baselineName}, {Name: "tlsrec-1s", Opts: desync.Options{TLSRec: posList("1+s")}}} {
+		for _, ps := range []preset{{Name: baselineName}, {Name: "tlsrec-1s", Options: desync.Options{TLSRec: posList("1+s")}}} {
 			p := loopbackProber(f.roots, c.timeout)
 			start := time.Now()
-			r := p.attempt(context.Background(), c.host, loopback, c.port, ps.Opts)
+			r := p.attempt(context.Background(), c.host, loopback, c.port, ps.Options)
 			if r.Stage != c.stage || r.Class != c.class {
 				t.Errorf("%s/%s: stage=%s class=%s err=%v; want %s/%s", c.name, ps.Name, r.Stage, r.Class, r.Err, c.stage, c.class)
 			}
@@ -182,7 +183,7 @@ func TestControllerProberContract(t *testing.T) {
 		if isFake(ps) || ps.Name == baselineName {
 			continue
 		}
-		cat[ps.ID()] = ps.Opts
+		cat[ps.ID()] = ps.Options
 		ids = append(ids, ps.ID())
 	}
 	sp := strategyProber{p: p, catalog: cat}

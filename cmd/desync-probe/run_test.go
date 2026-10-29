@@ -23,7 +23,7 @@ func TestRunConcurrencyAndTimeoutBounds(t *testing.T) {
 	for i := 0; i < 6; i++ {
 		targets = append(targets, target{Host: "site" + strconv.Itoa(i) + ".test", Port: port})
 	}
-	presets := []preset{{Name: baselineName}, {Name: "tlsrec-1s", Opts: desync.Options{TLSRec: posList("1+s")}}, {Name: "split-1", Opts: desync.Options{Split: posList("1")}}}
+	presets := []preset{{Name: baselineName}, {Name: "tlsrec-1s", Options: desync.Options{TLSRec: posList("1+s")}}, {Name: "split-1", Options: desync.Options{Split: posList("1")}}}
 	d := &countingDialer{}
 	p := loopbackProber(nil, 200*time.Millisecond)
 	p.dial = d.dial
@@ -61,7 +61,7 @@ func TestRunConcurrencyAndTimeoutBounds(t *testing.T) {
 func TestRunBudget(t *testing.T) {
 	port := rawServer(t, silent)
 	targets := []target{{Host: "a.test", Port: port}, {Host: "b.test", Port: port}}
-	presets := []preset{{Name: baselineName}, {Name: "tlsrec-1s", Opts: desync.Options{TLSRec: posList("1+s")}}}
+	presets := []preset{{Name: baselineName}, {Name: "tlsrec-1s", Options: desync.Options{TLSRec: posList("1+s")}}}
 	p := loopbackProber(nil, 400*time.Millisecond)
 	start := time.Now()
 	res := run(context.Background(), p, targets, presets, runConfig{Repeat: 5, Concurrency: 1, Budget: 900 * time.Millisecond}, nil)

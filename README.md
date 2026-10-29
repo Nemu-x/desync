@@ -253,6 +253,64 @@ _, err = packets.WriteTo(datagram, peer)
 - TTL-expired ICMP replies do not surface as receive errors. Windows suppresses them on the socket (`SIO_UDP_NETRESET`); Linux reports them on an unconnected socket only with `IP_RECVERR`/`IPV6_RECVERR`, which the wrapper turns off if they were enabled; macOS never delivers them to an unconnected socket.
 - `Counters()` reports original and fake datagrams, errors and peers. A shared `*UDPCounters` aggregates several sockets. Counters show what was sent, not whether it helped.
 
+## Strategy catalog
+
+The [`presets`](presets) package is the shared list of strategies: the TCP presets `desync-probe` tests and a set of UDP bursts, each with a name, a description, the options, the platform features it needs and a rank. Applications and `desync-probe` use the same catalog, so a strategy ID means the same transformation in a probe report, a controller cache and a saved setting.
+
+```go
+usable, skipped := presets.Available(desync.PlatformCapabilities())
+for _, p := range presets.Ranked(usable) {
+    fmt.Println(p.ID(), p.Name, p.Description) // p.Options goes to desync.WrapConn
+}
+for _, s := range skipped {
+    fmt.Println("not here:", s.Name, s.Reason)
+}
+
+m, ok := presets.ByID("s30879a4293") // a saved choice; m.TCP or m.UDP is set
+```
+
+- **IDs.** `ID()` is `s` plus the first 10 hex digits of the SHA-256 of `Options.Key()` for TCP (`OptionsID`, the ID `desync-probe` reports) and `u` plus 10 for `UDPOptions.Key()` (`UDPOptionsID`). An ID changes exactly when the transformation changes, so an ID saved by an older version may not be found; fall back instead of guessing. Persist IDs, never options: the `presets.ID` type marshals as a JSON string, rejects malformed values, accepts unknown well-formed ones and resolves with `Lookup`.
+- **Platforms.** `Available` keeps the presets whose features `Capabilities` provides and that `Validate` accepts on the running system; the others come back with the reason from `Capabilities.Unsupported`. `Filter` / `FilterUDP` look only at the capabilities, for example to show what another OS supports. `TCP()` and `UDP()` return the whole catalog in a stable order, the baseline `none` first.
+- **Order.** `Ranked` sorts by `Rank`, catalog order within a rank. It is a suggestion for which strategy to try first, not a measured success rate: record splits (one ordinary write, no extra packets), then write splits (one extra segment), split waits (up to a round trip), disorder and the out-of-band byte (a retransmission, and a server that must discard urgent data), single fakes (a TTL that has to expire between the filter and the server, and that breaks the handshake when the fake reaches the server) and last fakes combined with other methods. UDP bursts with fewer extra datagrams rank first.
+- **Controller.** Use `presets.IDs(...)` as `controller.Config.Candidates` and `CatalogVersion` in its `PolicyVersion`; see [controller](docs/controller.md#probe-contract-and-cache-identity).
+- **UDP.** `udp-zero-*` send 64 zero bytes before each of the first datagrams to a peer; `udp-quic-*` send QUIC Initial decoys only before QUIC client Initials and leave other UDP traffic alone.
+
+TCP presets (`-list-presets` shows the ones your system supports):
+
+| Name | ID | Rank | Needs |
+| --- | --- | --- | --- |
+| `none` | `s21c85503c1` | 0 | |
+| `tlsrec-1s` | `s30879a4293` | 10 | |
+| `tlsrec-3s` | `s15f5cfcd23` | 10 | |
+| `tlsrec-before-sni` | `s1855283037` | 10 | |
+| `tlsrec-multi` | `sf0976f29b4` | 10 | |
+| `split-1` | `se00f908f95` | 20 | |
+| `split-1s` | `saac5e9ce30` | 20 | |
+| `tlsrec-1s-split-1` | `se37a819919` | 20 | |
+| `random-tlsrec` | `s554e5bf206` | 10 | |
+| `random-split` | `s5642b6c74f` | 20 | |
+| `disorder-1` | `s49914f9987` | 40 | disorder |
+| `disorder-1s` | `s03a1c27bb3` | 40 | disorder |
+| `oob-1` | `s13ab09bb4d` | 40 | oob |
+| `oob-1s` | `scacee1fcd5` | 40 | oob |
+| `disoob-1s` | `s4797c0aa21` | 40 | disorder, oob |
+| `split-1s-wait-sent` | `s09fcfddf9c` | 30 | split-wait-sent (not macOS) |
+| `split-1s-wait-acked` | `s30e9c34c4a` | 30 | split-wait-acked |
+| `fake-ttl3`, `fake-ttl5`, `fake-ttl8` | `s9e8b15049f`, `s62607cf66f`, `sbdf889895a` | 50 | fake-tcp (Windows, Linux) |
+| `fake-ttl5-sni` | `s6aafd402a0` | 50 | fake-tcp |
+| `split-1s-fake-ttl5` | `s6fae1e8a40` | 50 | fake-tcp |
+| `disorder-1-fake-ttl5` | `s63fc503aca` | 60 | disorder, fake-tcp |
+
+UDP presets (all need fake-udp: Windows, Linux, macOS):
+
+| Name | ID | Rank | Burst |
+| --- | --- | --- | --- |
+| `udp-zero-ttl3`, `-ttl5`, `-ttl8` | `u6ebe839e20`, `ud13ae97453`, `u8c9983f843` | 20 | 6 zero-payload datagrams, TTL 3 / 5 / 8 |
+| `udp-zero-ttl5-r2` | `uebdba14699` | 10 | 2, TTL 5 |
+| `udp-zero-ttl5-r12` | `ufe49f977b8` | 30 | 12, TTL 5 |
+| `udp-quic-ttl3`, `-ttl5`, `-ttl8` | `ud88b8db473`, `u9309af956b`, `u127438077f` | 20 | 6 QUIC Initial decoys, QUIC only, TTL 3 / 5 / 8 |
+| `udp-quic-ttl5-r2` | `u044556c7c3` | 10 | 2, TTL 5 |
+
 ## Strategy controller
 
 The optional [`controller`](docs/controller.md) package picks a verified strategy for a destination and network and caches it. It runs caller-supplied application probes with bounded concurrency, attempts and deadlines, shares discovery between callers, keeps negative results and a last-known-good ranking, and supports manual override and background revalidation. The connection wrapper does not depend on it, and it ships no probe targets of its own. A runnable example with a local HTTPS server is in [`controller/example_test.go`](controller/example_test.go).
@@ -317,7 +375,7 @@ cp report.json ~/storage/downloads/      # now it is in the phone's Downloads fo
 
 **Send back** `report.json` (the program prints where it wrote it) as a file in a messenger or by email, and say which network it was (provider, home or mobile). The report contains the site names, the server addresses they resolved to, which strategies worked, error classes (`reset`, `timeout`, `eof`, `cert`, ...), timings, the program version, OS and CPU type, and what the library supports on that OS. It does not contain your IP addresses (local or public), MAC address, computer name or user name; DNS answers that are not public addresses are written as `non-public`, and error texts are stripped of addresses.
 
-Useful options (`-h` lists all): `-targets youtube.com,discord.com` or `-list sites.txt` to test other sites, `-presets tlsrec-1s,split-1s` to test fewer strategies (`-list-presets` shows them with their IDs), `-repeat 3` for more runs per pair, `-dns 1.1.1.1` to bypass the system resolver. A custom strategy uses the `desync-socks` flags, e.g. `-tlsrec 3+s -split 1+s -name mine`. Every strategy ID is derived from `Options.Key()`, so the same ID in two reports means the same transformation. The exit code is 0 whenever the measurement ran, however many sites were blocked.
+Useful options (`-h` lists all): `-targets youtube.com,discord.com` or `-list sites.txt` to test other sites, `-presets tlsrec-1s,split-1s` to test fewer strategies (`-list-presets` shows them with their IDs), `-repeat 3` for more runs per pair, `-dns 1.1.1.1` to bypass the system resolver. A custom strategy uses the `desync-socks` flags, e.g. `-tlsrec 3+s -split 1+s -name mine`. The strategies and their IDs come from the shared [strategy catalog](#strategy-catalog); every ID is derived from `Options.Key()`, so the same ID in two reports, or in a report and an application setting, means the same transformation. The exit code is 0 whenever the measurement ran, however many sites were blocked.
 
 How a run works: every name is resolved once; then each strategy dials the first IPv4 answer, wraps the socket with desync, completes a TLS handshake that verifies the real certificate for that name, and sends `HEAD /` over HTTP/1.1 or HTTP/2. A strategy *works* for a site when every repetition got an HTTP response, is *flaky* when some did, and *fails* when none did. The probe also implements `controller.Prober` (a working strategy yields `Application` proof), so the same measurement can later drive automatic discovery.
 

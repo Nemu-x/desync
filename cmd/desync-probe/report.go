@@ -140,7 +140,7 @@ func buildReport(started time.Time, caps desync.Capabilities, settings settingsI
 		Targets:      []targetInfo{},
 	}
 	for _, p := range presets {
-		r.Strategies = append(r.Strategies, strategyInfo{ID: p.ID(), Name: p.Name, Description: p.Description, Key: p.Opts.Key()})
+		r.Strategies = append(r.Strategies, strategyInfo{ID: p.ID(), Name: p.Name, Description: p.Description, Key: p.Key()})
 	}
 	for _, s := range skipped {
 		r.Skipped = append(r.Skipped, skippedInfo{Name: s.Name, Key: s.Key, Reason: scrub(s.Reason, nil)})
