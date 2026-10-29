@@ -42,6 +42,18 @@ func socksDial(t *testing.T, proxy, host string, port int) net.Conn {
 }
 
 func TestSocksTunnelWithTLSRec(t *testing.T) {
+	socksTunnel(t, desync.Options{TLSRec: []desync.Pos{{Offset: 1, FromSNI: true}}, Split: []desync.Pos{{Offset: 1, FromSNI: true}}})
+}
+
+func TestSocksTunnelWithDisorderAndOOB(t *testing.T) {
+	opts := desync.Options{Split: []desync.Pos{{Offset: 1, FromSNI: true}}, Disorder: true, OOB: &desync.OOBOptions{}}
+	if err := opts.Validate(); err != nil {
+		t.Skip(err)
+	}
+	socksTunnel(t, opts)
+}
+
+func socksTunnel(t *testing.T, opts desync.Options) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("through"))
 	}))
@@ -54,7 +66,6 @@ func TestSocksTunnelWithTLSRec(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ln.Close()
-	opts := desync.Options{TLSRec: []desync.Pos{{Offset: 1, FromSNI: true}}, Split: []desync.Pos{{Offset: 1, FromSNI: true}}}
 	go func() {
 		for {
 			c, err := ln.Accept()
@@ -79,6 +90,19 @@ func TestSocksTunnelWithTLSRec(t *testing.T) {
 
 func contains(b []byte, s string) bool {
 	return len(b) >= len(s) && string(b[len(b)-len(s):]) == s
+}
+
+func TestParseByte(t *testing.T) {
+	for in, want := range map[string]byte{"a": 'a', "0xff": 0xff, "0x00": 0} {
+		if got, err := parseByte(in); err != nil || got != want {
+			t.Errorf("parseByte(%q) = %d, %v", in, got, err)
+		}
+	}
+	for _, bad := range []string{"", "ab", "0x100", "0xzz"} {
+		if _, err := parseByte(bad); err == nil {
+			t.Errorf("parseByte(%q) accepted", bad)
+		}
+	}
 }
 
 func TestParseList(t *testing.T) {
