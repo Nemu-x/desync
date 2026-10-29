@@ -5,16 +5,8 @@ import (
 	"testing"
 
 	"github.com/Nemu-x/desync"
+	"github.com/Nemu-x/desync/presets"
 )
-
-func allCaps() desync.Capabilities {
-	return desync.Capabilities{
-		OS: "test", FakeTCP: true, FakeUDP: true, TTLControl: true, OOB: true,
-		Disorder:    desync.DisorderCapability{Supported: true},
-		Ack:         desync.AckCapability{Sent: true, Acked: true},
-		Unsupported: map[string]string{},
-	}
-}
 
 func names(ps []preset) map[string]bool {
 	m := map[string]bool{}
@@ -24,110 +16,74 @@ func names(ps []preset) map[string]bool {
 	return m
 }
 
-func TestCatalogFilteredByCapabilities(t *testing.T) {
-	full := catalog()
-	usable, skipped := buildCatalog(full, allCaps())
-	if len(usable) != len(full) || len(skipped) != 0 {
-		t.Fatalf("all capabilities: %d usable, %d skipped of %d", len(usable), len(skipped), len(full))
+func pos(s string) desync.Pos {
+	p, err := desync.ParsePos(s)
+	if err != nil {
+		panic(err)
 	}
-
-	darwin := allCaps()
-	darwin.OS = "darwin"
-	darwin.FakeTCP = false
-	darwin.Ack.Sent = false
-	darwin.Unsupported["fake-tcp"] = "no splice"
-	usable, skipped = buildCatalog(full, darwin)
-	got := map[string]string{}
-	for _, s := range skipped {
-		got[s.Name] = s.Reason
-		if s.Key == "" {
-			t.Errorf("%s: skipped preset without key", s.Name)
-		}
-	}
-	fakes := 0
-	for _, p := range full {
-		for _, f := range p.needs {
-			if f == featFakeTCP {
-				fakes++
-				if got[p.Name] != "fake-tcp: no splice" {
-					t.Errorf("%s: reason %q", p.Name, got[p.Name])
-				}
-			}
-		}
-	}
-	if fakes < 6 {
-		t.Errorf("only %d fake presets", fakes)
-	}
-	if !strings.Contains(got["split-1s-wait-sent"], "sent") || !strings.Contains(got["split-1s-wait-sent"], "darwin") {
-		t.Errorf("wait-sent reason %q", got["split-1s-wait-sent"])
-	}
-	if len(skipped) != fakes+1 {
-		t.Errorf("darwin-like: skipped %v", got)
-	}
-	if u := names(usable); !u["split-1s-wait-acked"] || !u["disoob-1s"] || !u[baselineName] {
-		t.Errorf("darwin-like: usable %v", u)
-	}
-
-	none := desync.Capabilities{OS: "plan9", Unsupported: map[string]string{"disorder": "not implemented on plan9"}}
-	usable, skipped = buildCatalog(full, none)
-	for _, p := range usable {
-		if len(p.needs) != 0 {
-			t.Errorf("no capabilities: kept %s", p.Name)
-		}
-	}
-	for _, s := range skipped {
-		if s.Reason == "" {
-			t.Errorf("%s: empty reason", s.Name)
-		}
-		if strings.HasPrefix(s.Name, "disorder") && s.Reason != "disorder: not implemented on plan9" {
-			t.Errorf("%s: reason %q", s.Name, s.Reason)
-		}
-	}
-	if len(usable)+len(skipped) != len(full) {
-		t.Fatalf("lost presets: %d + %d != %d", len(usable), len(skipped), len(full))
-	}
+	return p
 }
 
-// Every preset this platform keeps must also pass Options.Validate here.
-func TestPlatformCatalogValidates(t *testing.T) {
-	usable, _ := buildCatalog(catalog(), desync.PlatformCapabilities())
-	if _, invalid := validateCatalog(usable); len(invalid) != 0 {
-		t.Fatalf("presets kept by capabilities but rejected by Validate: %+v", invalid)
+func posList(ss ...string) []desync.Pos {
+	out := make([]desync.Pos, len(ss))
+	for i, s := range ss {
+		out[i] = pos(s)
 	}
-	if usable[0].Name != baselineName || usable[0].Opts.Enabled() {
+	return out
+}
+
+// catalog is the shared TCP catalog, independent of the platform.
+func catalog() []preset { return presets.TCP() }
+
+// filterCatalog keeps the catalog entries caps provides, without Validate.
+func filterCatalog(caps desync.Capabilities) ([]preset, []skippedPreset) {
+	return presets.Filter(presets.TCP(), caps)
+}
+
+// The catalog moved to the presets package, which tests it per platform; the
+// probe must still see every preset in the same order with the same IDs.
+func TestProbeUsesSharedCatalog(t *testing.T) {
+	caps := desync.PlatformCapabilities()
+	usable, skipped := availablePresets(caps)
+	want, wantSkipped := presets.Available(caps)
+	if len(usable) != len(want) || len(skipped) != len(wantSkipped) || len(usable)+len(skipped) != len(catalog()) {
+		t.Fatalf("%d usable, %d skipped of %d", len(usable), len(skipped), len(catalog()))
+	}
+	for i := range usable {
+		if usable[i].Name != want[i].Name || usable[i].ID() != want[i].ID() {
+			t.Fatalf("%d: %s, want %s", i, usable[i].Name, want[i].Name)
+		}
+	}
+	if usable[0].Name != baselineName || usable[0].Options.Enabled() {
 		t.Fatalf("first preset %q must be the untransformed baseline", usable[0].Name)
+	}
+	kept, _ := filterCatalog(caps)
+	if len(kept) != len(usable) {
+		t.Fatalf("presets kept by capabilities but rejected by Validate: %+v", skipped)
 	}
 }
 
 func TestStableIDs(t *testing.T) {
-	seenID, seenName := map[string]string{}, map[string]bool{}
-	for _, p := range catalog() {
-		id := p.ID()
-		if len(id) != 11 || id[0] != 's' {
-			t.Errorf("%s: malformed id %q", p.Name, id)
-		}
-		if other, dup := seenID[id]; dup {
-			t.Errorf("%s and %s share id %s", p.Name, other, id)
-		}
-		if seenName[p.Name] || strings.ContainsAny(p.Name, ", ") {
-			t.Errorf("bad or duplicate name %q", p.Name)
-		}
-		seenID[id], seenName[p.Name] = p.Name, true
-		if p.ID() != strategyID(p.Opts) {
-			t.Errorf("%s: id not derived from the key", p.Name)
-		}
-	}
 	// IDs are part of the report format; they change only when Key changes.
 	golden := map[string]string{baselineName: "s21c85503c1", "tlsrec-1s": "s30879a4293", "split-1s": "saac5e9ce30", "fake-ttl5": "s62607cf66f"}
+	found := 0
 	for _, p := range catalog() {
-		if want, ok := golden[p.Name]; ok && p.ID() != want {
-			t.Errorf("%s: id %s, want %s (key %q)", p.Name, p.ID(), want, p.Opts.Key())
+		if p.ID() != presets.OptionsID(p.Options) {
+			t.Errorf("%s: id not derived from the key", p.Name)
+		}
+		if want, ok := golden[p.Name]; ok {
+			found++
+			if p.ID() != want {
+				t.Errorf("%s: id %s, want %s (key %q)", p.Name, p.ID(), want, p.Key())
+			}
 		}
 	}
-	a := desync.Options{TLSRec: posList("1+s")}
-	b := desync.Options{TLSRec: posList("1+s")}
-	if strategyID(a) != strategyID(b) || strategyID(a) == strategyID(desync.Options{TLSRec: posList("2+s")}) {
-		t.Fatal("ids must follow the options")
+	if found != len(golden) {
+		t.Fatalf("%d of %d golden presets in the catalog", found, len(golden))
+	}
+	c, err := (customFlags{tlsrec: "1+s", wait: "none", oobByte: "a"}).preset()
+	if err != nil || c.ID() != golden["tlsrec-1s"] {
+		t.Fatalf("custom strategy id %s, %v", c.ID(), err)
 	}
 }
 
@@ -158,8 +114,8 @@ func TestCustomPreset(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := desync.Options{TLSRec: posList("1+s", "3+s"), Split: posList("1")}
-	if p.Opts.Key() != want.Key() || p.Name != "mine" {
-		t.Fatalf("key %q, want %q", p.Opts.Key(), want.Key())
+	if p.Key() != want.Key() || p.Name != "mine" {
+		t.Fatalf("key %q, want %q", p.Key(), want.Key())
 	}
 	ps, err := addCustom(catalog(), p)
 	if err != nil || len(ps) != len(catalog())+1 {
@@ -171,7 +127,7 @@ func TestCustomPreset(t *testing.T) {
 	if ps, _ := addCustom(catalog(), sp); len(ps) != len(catalog()) {
 		t.Fatal("duplicate strategy added twice")
 	}
-	if _, err := addCustom(catalog(), preset{Name: "tlsrec-1s", Opts: desync.Options{Split: posList("7")}}); err == nil {
+	if _, err := addCustom(catalog(), preset{Name: "tlsrec-1s", Options: desync.Options{Split: posList("7")}}); err == nil {
 		t.Fatal("name clash accepted")
 	}
 	if _, err := (customFlags{disorder: true, wait: "none", oobByte: "a"}).preset(); err == nil {

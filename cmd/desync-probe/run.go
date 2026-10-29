@@ -130,7 +130,7 @@ func run(ctx context.Context, p *prober, targets []target, presets []preset, cfg
 					report(j, nil)
 					continue
 				}
-				r := p.attempt(ctx, targets[j.t].Host, ip, targets[j.t].Port, presets[j.s].Opts)
+				r := p.attempt(ctx, targets[j.t].Host, ip, targets[j.t].Port, presets[j.s].Options)
 				if !r.ok() && ctx.Err() != nil {
 					// The budget, not the network, ended this attempt.
 					report(j, nil)
