@@ -35,6 +35,7 @@ application probe and real application tests; a successful TCP dial is insuffici
 | Platform ACK capabilities | `PlatformCapabilities`/`ProbeConn`; opt-in `Options.SplitWait` (sent/acked) read from the socket's send queue, bounded by Close, deadlines and a timeout; explicit errors where unsupported; Windows reported as counter-based, not reliable |
 | Bounded randomization | Opt-in `Options.Random` record/write cut ranges with count/minimum-piece bounds, optional reproducible seed (per-connection crypto/rand seed otherwise) and `Options.Key()` strategy identity; deterministic options unchanged |
 | Cross-platform methods | `Options.Disorder` and `Options.OOB` (ByeDPI disorder, oob, disoob) on Windows, Linux/Android and macOS; TCP fake on Linux/Android via vmsplice/splice; UDP low-TTL burst on Linux/Android and macOS; macOS TCP fake reported unsupported with the reason; `Capabilities.Disorder`, `OOB` and `Unsupported` |
+| Automatic TTL | `FakeOptions.AutoTTL` (zapret-style delta/min/max) from the SYN-ACK hop limit on Linux/Android IPv6 (`ControlAutoTTL`, `ObserveHops`, `EstimateHops`), with an optional fixed fallback TTL; Linux IPv4, Windows and macOS reported unsupported with the reason; `FakeTTLCandidates`/`UDPTTLCandidates` and `UDPOptions.Key()` for range discovery elsewhere |
 | Examples and tests | Owned HTTPS application probe, fragmented/malformed TLS, concurrency, deadlines, IPv4/IPv6 and native Windows regressions |
 
 The controller is available as an API. It is **not yet connected to SlothClash or
@@ -139,6 +140,15 @@ TCP fake is not implementable (sendfile copies into the socket buffer) and is
 reported in `Capabilities.Unsupported`. Not yet done: macOS runtime evidence
 beyond CI, real-network effectiveness, and combining Fake with Split,
 Disorder or OOB.
+
+Automatic TTL: implemented where an unprivileged TCP socket can see the
+server's TTL, which is Linux/Android over IPv6 only (`IPV6_RECVHOPLIMIT`
+recorded from the SYN-ACK; verified on loopback with a server hop limit and a
+BPF drop filter, on amd64 and 386). Linux IPv4, Windows and macOS expose no
+received TTL for TCP and are reported in `Capabilities.Unsupported`; there the
+controller probes `FakeTTLCandidates` (for example 2..8). Not yet done: real
+network evidence that the estimate places the fake between filter and server,
+an unprivileged ICMP-echo estimate for IPv4, and desync-socks flags.
 
 ### 3. First-class Mihomo outbound as a maintained patch
 

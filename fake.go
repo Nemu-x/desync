@@ -19,7 +19,14 @@ var (
 // bytes into the application's stream. Implemented on Windows and Linux
 // (including Android); see PlatformCapabilities for the macOS reason.
 type FakeOptions struct {
+	// TTL expires the fake before the server (1..255). With AutoTTL it is
+	// the fallback used when the path cannot be observed; 0 then fails the
+	// write instead.
 	TTL int
+	// AutoTTL derives the TTL from the TTL of the server's packets on this
+	// connection (see AutoTTL, ControlAutoTTL and
+	// PlatformCapabilities().AutoTTL).
+	AutoTTL *AutoTTL
 	// Prefix is measured after TLS record fragmentation. Negative offsets
 	// count from the end; zero defaults to -1 (all but the last byte).
 	Prefix int
@@ -54,8 +61,8 @@ func (o Options) Validate() error {
 	if o.Fake == nil {
 		return nil
 	}
-	if o.Fake.TTL < 1 || o.Fake.TTL > 255 {
-		return fmt.Errorf("desync: fake TTL must be between 1 and 255")
+	if err := o.Fake.validateTTL(); err != nil {
+		return err
 	}
 	if o.Fake.Timeout < 0 {
 		return fmt.Errorf("desync: fake timeout must not be negative")

@@ -55,6 +55,8 @@ func (o Options) Key() string {
 			sum := sha256.Sum256(f.Payload)
 			b.WriteString(hex.EncodeToString(sum[:]))
 		}
+		// Only when set, so keys of fixed-TTL fakes are unchanged.
+		writeAutoTTL(&b, f.AutoTTL)
 	}
 	b.WriteString(";random=")
 	if r := o.Random; r == nil {

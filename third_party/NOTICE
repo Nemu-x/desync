@@ -18,3 +18,13 @@ hufrea. The license text is in BYEDPI-LICENSE. Derived from it:
   before the next one), --oob and --disoob (the piece and one urgent byte sent
   with MSG_OOB), desync.c DESYNC_DISORDER, DESYNC_OOB, DESYNC_DISOOB and
   send_oob. Reimplemented in Go; the default urgent byte 'a' is ByeDPI's.
+
+zapret (https://github.com/bol-van/zapret), MIT License, Copyright (c)
+2016-2024 bol-van. The license text is in ZAPRET-LICENSE. Derived from it:
+
+- autottl.go: the hop count guess from a received TTL and the standard
+  initial TTLs 64/128/255 within 32 hops (nfq/darkmagic.c hop_count_guess),
+  and the delta/min/max TTL policy with the defaults 1, 3 and 20 and the
+  rejection of a TTL not below the hop count (autottl_eval,
+  AUTOTTL_DEFAULT_DESYNC_*, --dpi-desync-autottl), v72.13. Reimplemented in
+  Go; 64 and 128 are read as zero hops.

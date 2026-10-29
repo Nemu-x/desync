@@ -88,8 +88,11 @@ type Capabilities struct {
 	OOB bool
 	// Ack describes send-queue / acknowledgement observation for SplitWait.
 	Ack AckCapability
+	// AutoTTL describes observing the server's TTL for FakeOptions.AutoTTL.
+	AutoTTL AutoTTLCapability
 	// Unsupported explains, keyed by method ("fake-tcp", "fake-udp",
-	// "disorder", "oob"), why a method is not implemented on this OS.
+	// "disorder", "oob", "auto-ttl-ipv4", "auto-ttl-ipv6"), why a method is
+	// not implemented on this OS.
 	Unsupported map[string]string
 }
 
@@ -129,7 +132,14 @@ func PlatformCapabilities() Capabilities {
 		Disorder:    platformDisorder,
 		OOB:         supportsOOB,
 		Ack:         platformAck,
+		AutoTTL:     platformAutoTTL,
 		Unsupported: map[string]string{},
+	}
+	if !platformAutoTTL.IPv4 {
+		c.Unsupported["auto-ttl-ipv4"] = autoTTLIPv4Reason
+	}
+	if !platformAutoTTL.IPv6 {
+		c.Unsupported["auto-ttl-ipv6"] = autoTTLIPv6Reason
 	}
 	if !supportsFake {
 		c.Unsupported["fake-tcp"] = fakeUnsupportedReason

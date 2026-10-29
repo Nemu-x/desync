@@ -204,6 +204,10 @@ func (c *Conn) sendFake(real, payload, tail []byte) error {
 	if err != nil {
 		return err
 	}
+	ttl, err := c.fakeTTL(raw)
+	if err != nil {
+		return err
+	}
 	ticker := time.NewTicker(5 * time.Millisecond)
 	defer ticker.Stop()
 acquire:
@@ -239,7 +243,7 @@ acquire:
 			return
 		}
 		nativeErr = func() (callErr error) {
-			saved, ttlErr := setFakeTTL(socket, c.opts.Fake.TTL)
+			saved, ttlErr := setFakeTTL(socket, ttl)
 			if ttlErr != nil {
 				return ttlErr
 			}
