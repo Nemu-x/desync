@@ -46,8 +46,16 @@ func dropLowHop(t *testing.T, server *net.TCPConn, ipv6 bool) {
 		t.Fatal(err)
 	}
 	var opErr error
-	if err := raw.Control(func(fd uintptr) { opErr = syscall.AttachLsf(int(fd), prog) }); err != nil || opErr != nil {
-		t.Fatal(err, opErr)
+	if err := raw.Control(func(fd uintptr) { opErr = syscall.AttachLsf(int(fd), prog) }); err != nil {
+		t.Fatal(err)
+	}
+	if errors.Is(opErr, syscall.EPERM) && os.Getenv("DESYNC_REQUIRE_LOWHOP") == "" {
+		// unprivileged users may not attach this filter on some kernels (the
+		// GitHub runners); CI runs the test again as root with the variable set
+		t.Skipf("attaching the drop filter: %v; run as root or set DESYNC_REQUIRE_LOWHOP=1 to fail instead", opErr)
+	}
+	if opErr != nil {
+		t.Fatal(opErr)
 	}
 }
 
