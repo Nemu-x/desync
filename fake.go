@@ -47,6 +47,9 @@ func (o Options) Validate() error {
 	if err := o.validateSplitWait(); err != nil {
 		return err
 	}
+	if err := o.validateSocketMethods(); err != nil {
+		return err
+	}
 	if o.Fake == nil {
 		return nil
 	}

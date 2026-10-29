@@ -58,3 +58,7 @@ func TestGetsockoptIntRoundTrip(t *testing.T) {
 		t.Fatalf("IPv6 hop limit: %d %v", hops, err)
 	}
 }
+
+func setOOBInline(fd uintptr) error {
+	return syscall.SetsockoptInt(syscall.Handle(fd), syscall.SOL_SOCKET, 0x0100, 1) // SO_OOBINLINE
+}
