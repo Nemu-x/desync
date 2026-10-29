@@ -3,7 +3,9 @@
 ## Commands
 
 Run from a clean repository checkout. Network fixtures own their loopback servers;
-there are no implicit probes to YouTube, Discord or another public service.
+there are no implicit probes to YouTube, Discord or another public service. The
+`desync-probe` default site list is contacted only when a person runs that tool;
+its tests use loopback servers and an injected resolver.
 
 ```sh
 go test -count=1 -timeout=3m ./...
@@ -32,11 +34,60 @@ with Go 1.26, each followed by a verbose run of the native capability tests
 (capabilities, ACK observation, `ProbeConn`, `SIO_TCP_INFO` layout, disorder,
 OOB, the Linux fake and the UDP burst; no root needed); Linux race
 tests; a 30-second smoke run of each fuzz target; Go 1.20.14 minimum-version
-checks on Linux and on Windows (the native fake TCP/UDP backends); and builds for Windows, Linux and macOS
+checks on Linux and on Windows (the native fake TCP/UDP backends); and builds of the library, `desync-socks` and `desync-probe` for Windows, Linux and macOS
 (amd64/arm64), Linux armv7 and Android arm64. The `CI` job passes only when every
 other job does, so it is the one check to require on `main`. This describes the
 workflow configuration; inspect the actual Actions result for a given revision.
+The separate `Binaries` workflow (`.github/workflows/binaries.yml`) builds both
+commands for windows, linux and darwin (amd64, arm64) and android/arm64 on every
+push to `main` (artifact `desync-binaries`, with `SHA256SUMS`) and attaches them
+to the GitHub release of a `v*` tag.
 The module's declared minimum remains Go 1.20 and it uses only the standard library.
+
+## Real-network measurements with desync-probe
+
+Loopback tests show that a strategy is applied correctly, not that it gets past
+a filter. Real-network results come from `desync-probe` reports sent by testers
+(see [testing on your network](../README.md#testing-on-your-network)). Read a
+report with these limits in mind:
+
+- One report describes one network at one time; filters differ by provider,
+  region, IPv4/IPv6 and time of day. Compare reports by `strategies[].id`
+  (derived from `Options.Key()`), not by name.
+- `works` needs an HTTP response from a server whose certificate verified for
+  the name; `fails` with `reset`, `timeout` or `eof` at the `tls` stage is the
+  usual sign of SNI filtering, while a `dial` failure or a `failed` DNS status
+  points at address or DNS blocking that no ClientHello strategy changes.
+- A target whose `address` is `non-public` was answered by a local proxy, VPN
+  or DNS filter; its results do not describe the provider's network.
+- `flaky` pairs and random presets need more repetitions (`-repeat`) before a
+  conclusion. The order of attempts is interleaved, but rate limiting by a site
+  can still look like filtering.
+- The probe measures one HEAD request on a fresh connection. It does not show
+  that a long video stream, a Discord voice session or QUIC traffic works.
+
+Loopback coverage of the tool, 2026-10-29: every preset this OS supports
+completes a verified HTTP/1.1 and HTTP/2 exchange (the TCP fake presets
+complete on Linux, where the receiver reads the rewritten page, and fail at
+the TLS stage on Windows, where the server receives the fake bytes since no
+router drops them); error classes for a reset after the ClientHello, a silent
+server, a normal close, a wrong certificate, a silent HTTP server and a
+refused port; an emulated filter that resets connections whose first segment
+carries the server name; concurrency and budget bounds; and a report scanned
+for loopback, interface and MAC addresses, the host name and the user name.
+
+## Local verification, 2026-10-29 (desync-probe)
+
+- Windows 11 26200: `go test ./...` on Go 1.26.10 (`-shuffle=on`) and Go 1.20.14;
+  `go vet ./...` for windows, linux and darwin on both.
+- Linux in Docker: `go vet` and `go test ./...` on Go 1.26.9 and 1.20.14,
+  `go test -race ./...`, and the tool's package three more times with `-race`.
+- Builds of both commands for windows, linux and darwin (amd64, arm64),
+  android/arm64, linux/arm, freebsd/amd64 and js/wasm; the binaries workflow
+  build loop was run locally; `actionlint` on both workflows.
+- Not verified: the workflow on GitHub (artifact upload and release
+  publishing), macOS and Android runtime of the tool, the Termux resolver
+  fallback, double-click behavior on Windows, and any real filtered network.
 
 ## Local verification, 2026-10-29 (cross-platform methods)
 
